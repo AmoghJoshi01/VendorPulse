@@ -3,6 +3,9 @@ import json
 import os
 import time
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # --- STAGE-READY LOOK & FEEL ---
 st.set_page_config(page_title="VendorPulse", page_icon="💼", layout="wide")
 
