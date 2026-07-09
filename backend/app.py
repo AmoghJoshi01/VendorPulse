@@ -1,9 +1,12 @@
-import streamlit as st
 import json
 import os
 import time
 
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+import streamlit as st
+
 load_dotenv()
 
 # --- STAGE-READY LOOK & FEEL ---
@@ -29,15 +32,14 @@ MOCK_INVOICE_DATA = {
 # --- ATTEMPT GOOGLE GENAI CLIENT SETUP ---
 API_KEY = os.environ.get("GEMINI_API_KEY")
 USE_SIMULATOR = True
+client = None
 
 if API_KEY:
     try:
-        from google import genai
-        from google.genai import types
         client = genai.Client()
         USE_SIMULATOR = False
     except Exception:
-        # If library import fails, fallback silently to simulation mode
+        # If library client creation fails, fallback silently to simulation mode
         USE_SIMULATOR = True
 
 def process_invoice(uploaded_file):
