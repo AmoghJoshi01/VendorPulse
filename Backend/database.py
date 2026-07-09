@@ -152,6 +152,7 @@ class PurchaseOrder(Base):
 
     # Relationships
     organization = relationship("Organization", back_populates="purchase_orders")
+    vendor = relationship("Vendor")
     goods_receipts = relationship("GoodsReceipt", back_populates="purchase_order")
     invoices = relationship("Invoice", back_populates="purchase_order")
     items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
