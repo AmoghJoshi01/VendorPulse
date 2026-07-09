@@ -1,10 +1,25 @@
 import os
+import re
 import json
 import uuid
 import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
+
+def clean_numeric_value(val) -> float:
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    # If it is a string, remove currency symbols, commas, percent signs, and spaces
+    val_str = str(val).strip()
+    try:
+        # Regex to strip everything except digits, dots, and minus signs
+        cleaned = re.sub(r"[^\d\.-]", "", val_str)
+        return float(cleaned) if cleaned else 0.0
+    except (ValueError, TypeError):
+        return 0.0
 
 from fastapi import FastAPI, Depends, File, UploadFile, Form, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -264,23 +279,38 @@ def execute_3_way_match(db: Session, invoice: Invoice, extracted_items: List[dic
 
     # 3. Line by Line Match
     for ext_item in extracted_items:
-        desc = ext_item.get("item_description", "").lower().strip()
-        inv_qty = ext_item.get("quantity", 0.0)
-        inv_price = ext_item.get("unit_price", 0.0)
+        desc_val = ext_item.get("item_description")
+        desc = str(desc_val).lower().strip() if desc_val else ""
+        
+        # Safely convert qty, unit price, and total price to float
+        try:
+            inv_qty = float(ext_item.get("quantity", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            inv_qty = 0.0
+            
+        try:
+            inv_price = float(ext_item.get("unit_price", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            inv_price = 0.0
+            
+        try:
+            inv_total_price = float(ext_item.get("total_price", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            inv_total_price = 0.0
         
         # Insert line item
         inv_line = InvoiceItem(
             invoice_id=invoice.id,
-            item_description=ext_item.get("item_description", "Unknown Item"),
+            item_description=desc_val or "Unknown Item",
             quantity=Decimal(str(inv_qty)),
             unit_price=Decimal(str(inv_price)),
-            total_price=Decimal(str(ext_item.get("total_price", 0.0)))
+            total_price=Decimal(str(inv_total_price))
         )
         
         # Match PO item
         po_item = po_items_map.get(desc)
         # Fallback to loose substring match
-        if not po_item:
+        if not po_item and desc:
             for po_desc, item in po_items_map.items():
                 if po_desc in desc or desc in po_desc:
                     po_item = item
@@ -328,7 +358,7 @@ def execute_3_way_match(db: Session, invoice: Invoice, extracted_items: List[dic
             exc = InvoiceException(
                 invoice_id=invoice.id,
                 exception_type="PRICE_VARIANCE",
-                description=f"Line item '{ext_item.get('item_description')}' does not exist on Purchase Order {po.po_number}.",
+                description=f"Line item '{desc_val or 'Unknown Item'}' does not exist on Purchase Order {po.po_number}.",
                 confidence_score=Decimal("80.00"),
                 status="OPEN"
             )
@@ -738,14 +768,18 @@ async def upload_invoice(
     vendor_name = invoice_data.get("vendor_name", "Unknown Vendor")
     vendor = db.query(Vendor).filter(Vendor.name == vendor_name).first()
     if not vendor:
+        discount_pct = clean_numeric_value(invoice_data.get("early_payment_discount_percentage", 0.00))
+        if discount_pct > 1.0:
+            discount_pct = discount_pct / 100.0
+            
         vendor = Vendor(
             organization_id=org.id,
             name=vendor_name,
             email=f"billing@{vendor_name.lower().replace(' ', '')}.com",
             payment_terms=invoice_data.get("payment_terms", "Net 30"),
-            default_discount_pct=Decimal(str(invoice_data.get("early_payment_discount_percentage", 0.00))),
-            discount_days=int(invoice_data.get("discount_period_days", 0)),
-            net_days=int(invoice_data.get("net_period_days", 30)),
+            default_discount_pct=Decimal(str(discount_pct)),
+            discount_days=int(clean_numeric_value(invoice_data.get("discount_period_days", 0))),
+            net_days=int(clean_numeric_value(invoice_data.get("net_period_days", 30))),
             status="ACTIVE"
         )
         db.add(vendor)
@@ -753,14 +787,16 @@ async def upload_invoice(
 
     # Create Invoice ORM Model
     issue_date = date.today()
-    net_days = int(invoice_data.get("net_period_days", 30))
+    net_days = int(clean_numeric_value(invoice_data.get("net_period_days", 30)))
     due_date = issue_date + timedelta(days=net_days)
+
+    invoice_amount = clean_numeric_value(invoice_data.get("invoice_amount", 0.00))
 
     invoice = Invoice(
         organization_id=org.id,
         vendor_id=vendor.id,
         invoice_number=invoice_data.get("invoice_number", f"INV-{uuid.uuid4().hex[:6].upper()}"),
-        amount=Decimal(str(invoice_data.get("invoice_amount", 0.00))),
+        amount=Decimal(str(invoice_amount)),
         tax_amount=Decimal("0.00"),
         issue_date=issue_date,
         due_date=due_date,
