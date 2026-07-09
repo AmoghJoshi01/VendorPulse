@@ -1,121 +1,146 @@
-# VendorPulse Local Setup & Execution Guide
+# VendorPulse Setup & Execution Guide
 
-This guide details the step-by-step instructions to set up, configure, initialize, and run the **VendorPulse** AP automation and treasury optimization platform locally.
+This comprehensive guide details the step-by-step instructions to install, configure, initialize, and execute the **VendorPulse** Accounts Payable (AP) automation and treasury capital optimizer platform.
 
 ---
 
-## 1. Prerequisites
+## 1. System Architecture Overview
 
-Ensure your development machine has the following tools installed:
+VendorPulse consists of four main architectural modules:
+
+```mermaid
+graph TD
+    A[React Frontend Dashboard] -->|REST APIs /api/| B[FastAPI Web Server]
+    B -->|SQLAlchemy ORM| C[(SQLite Database)]
+    B -->|Live Document Extraction| D[OCR & AI Pipeline]
+    D -->|1. GCP Invoice Parser| E[Document AI API]
+    D -->|2. Fallback Vision Model| F[Gemini API]
+    D -->|3. Fallback Simulator| G[Mock Ingestion]
+```
+
+* **Frontend**: Built with React, Vite, Tailwind CSS, and Lucide icons. Serves a treasury analytics view, invoices manager, matching details screen, and an interactive supplier portal.
+* **Backend**: FastAPI web server hosting REST APIs for data synchronization, 3-way matching validation, treasury discount matrix math, and manual exception resolutions.
+* **Database**: Relational SQLite database (`vendorpulse.db`) mapped via SQLAlchemy ORM. Tracks organizations, users, vendors, purchase orders, goods receipts, invoices, line-item details, and approval history logs.
+* **OCR & AI Engine**: A Google Document AI (Invoice Parser) and Gemini 1.5 Flash vision extraction pipeline that extracts invoice metadata. Runs in **Simulator Mode** automatically if credentials are not configured.
+
+---
+
+## 2. Prerequisites
+
+Ensure your machine has the following software installed:
+* **Node.js**: Version 18.0 or higher.
 * **Python**: Version 3.10 or higher.
-* **Pip**: Python package installer (typically bundled with Python).
-* **Git**: To clone/manage the repository.
+* **NPM**: Package manager (comes bundled with Node.js).
+* **Git**: Version control CLI.
 
 ---
 
-## 2. Environment Configuration
+## 3. Environment Configuration
 
-1. **Create the Environment File**:
-   In the root directory of the project, verify or create a file named `.env`:
+1. In the root directory of the project, create or verify the existence of a file named `.env`:
    ```bash
-   GEMINI_API_KEY="your-google-gemini-api-key-here"
+   # Google Gemini API Key (Optional for fallback vision processing)
+   GEMINI_API_KEY="your-gemini-api-key-here"
+
+   # Google Cloud Platform credentials (Optional for live Document AI)
+   GCP_PROJECT_ID="your-gcp-project-id"
+   DOCUMENT_AI_PROCESSOR_ID="your-document-ai-processor-id"
+   GCP_LOCATION="us"
+   GOOGLE_APPLICATION_CREDENTIALS="C:/path/to/your/gcp-service-account.json"
+
+   # Database Connection URL (Defaults to local SQLite)
    DATABASE_URL="sqlite:///vendorpulse.db"
    ```
-   * *Note: If `GEMINI_API_KEY` is omitted, the application automatically triggers its **Intelligent Simulator Mode**, matching baseline ledger entries seamlessly without making network requests.*
-   * *Note: `DATABASE_URL` defaults to a local SQLite database (`vendorpulse.db` in the project root) for quick setup, but you can configure a PostgreSQL database URL if running in production.*
+
+   > [!NOTE]
+   > If no API keys are provided in `.env`, VendorPulse runs in **Intelligent Simulator Mode**, which extracts and processes mock data without throwing errors or requiring internet requests.
 
 ---
 
-## 3. Backend Installation & Setup
+## 4. Installation & Setup
 
-We recommend using a Python virtual environment to manage dependencies.
+Open your terminal (PowerShell, Command Prompt, or terminal shell) and execute the following installation prompts:
 
-1. **Create a Virtual Environment**:
-   Navigate to the project root and create a virtual environment:
+### Step A: Backend Installation
+1. **Navigate to the root directory** and create a Python virtual environment:
    ```powershell
-   # On Windows (PowerShell)
+   # Windows (PowerShell)
    python -m venv .venv
-   
-   # On macOS / Linux
-   python3 -m venv .venv
    ```
-
-2. **Activate the Virtual Environment**:
+2. **Activate the virtual environment**:
    ```powershell
-   # On Windows (PowerShell)
+   # Windows (PowerShell)
    .venv\Scripts\Activate.ps1
-   
-   # On Windows (Command Prompt)
+
+   # Windows (Command Prompt)
    .venv\Scripts\activate.bat
-   
-   # On macOS / Linux
+
+   # macOS / Linux
    source .venv/bin/activate
    ```
+3. **Install python packages**:
+   ```powershell
+   pip install -r Backend/requirements.txt
+   ```
 
-3. **Install Dependencies**:
-   Install all required libraries mapped in the [backend/requirements.txt](file:///D:/VendorPulse/backend/requirements.txt):
-   ```bash
-   pip install -r backend/requirements.txt
+### Step B: Database Initialization & Seeding
+Ensure you are in the project root directory with your virtual environment active, and execute:
+```powershell
+python Backend/database.py
+```
+* **What this does**: Automatically compiles the relational schema tables, populates organization profiles (Acme Corp), default users (approvers & specialists), and seeds baseline purchase orders, goods receipts, and invoices.
+
+### Step C: Frontend Installation
+1. Open a new terminal window or tab, navigate to the `Frontend` folder, and install packages:
+   ```powershell
+   cd Frontend
+   npm install
    ```
 
 ---
 
-## 4. Database Initialization & Seeding
+## 5. Execution Instructions (Running the Project)
 
-Before running the application services, you must compile the schemas and populate the baseline demo values.
+You can launch both the frontend and backend applications using the automatic script or by running manual terminal prompts.
 
-1. **Initialize the Database**:
-   Run the database module directly:
-   ```bash
-   python backend/database.py
-   ```
-   This will:
-   * Build all PostgreSQL/SQLite tables (`organizations`, `users`, `vendors`, `purchase_orders`, `purchase_order_items`, `goods_receipts`, `goods_receipt_items`, `invoices`, `invoice_items`, `exceptions`, `approval_rules`, `approval_history`, `exception_routing_history`).
-   * Seed the database with default organizations, users (finance managers and approvers), vendors, purchase orders, goods receipts, and itemized line items.
+### Option 1: Automatic Startup (Windows Only)
+In your file explorer or terminal, run the batch script:
+```powershell
+./run.bat
+```
+* This script automatically opens two separate command line windows to boot the FastAPI backend server on `http://127.0.0.1:8000` and the React Vite dev server on `http://localhost:5173`.
 
----
+### Option 2: Manual Terminal Commands
 
-## 5. Running the Applications
-
-VendorPulse consists of two primary services: the **FastAPI Web API Server** and the **Streamlit Interactive Pitch Dashboard**.
-
-### Service A: FastAPI Backend Server (Production APIs)
-This is the core business logic server handling document ingestion, 3-way matching, routing, and cash forecasting.
-
-1. **Start the API Server**:
-   Navigate to the `backend` folder and run `main.py`:
-   ```bash
-   cd backend
-   python main.py
-   ```
-   * The API server will boot on **`http://localhost:8000`** with hot-reloading enabled.
-   * **Swagger Interactive Documentation**: View and test the REST endpoints at **`http://localhost:8000/docs`**.
-
-### Service B: Streamlit Pitch Dashboard (Showcase Demo)
-This dashboard provides a rich visual tool to pitch the AP automation and Capital Optimizer decision matrix.
-
-1. **Start the Dashboard**:
-   From the project root (ensure your virtual environment is active), run:
-   ```bash
-   streamlit run backend/app.py
-   ```
-   * The web application will launch automatically in your browser at **`http://localhost:8501`**.
+| Application | Working Directory | Command Line Prompt | URL Address |
+| :--- | :--- | :--- | :--- |
+| **FastAPI Backend** | `/` (Project Root) | `python Backend/main.py` | `http://127.0.0.1:8000` |
+| **Swagger OpenAPI** | `/` (Project Root) | *(Available when Backend is running)* | `http://127.0.0.1:8000/docs` |
+| **React Frontend** | `/Frontend` | `npm run dev` | `http://localhost:5173` |
+| **Streamlit Showcase** | `/` (Project Root) | `streamlit run Backend/app.py` | `http://localhost:8501` |
 
 ---
 
-## 6. How to Test the Exception Workflows (Simulator Mode)
+## 6. How to Test the Exception Workflows (Simulator Ingestion)
 
-If you are running in **Simulator Mode** (without a live `GEMINI_API_KEY`), the backend has a smart parser that lets you test different edge cases based on the filename you upload in the document ingestion field:
+When running the React dashboard, go to the **Document Ingestion** tab. You can test the automated 3-Way Match Verification Engine and Exception Router by uploading a dummy file named with the following keywords:
 
 1. **Perfect 3-Way Match**:
-   * **Action**: Upload any standard invoice image/PDF (e.g. `invoice_normal.pdf`).
-   * **Result**: Status maps to `MATCHED` and prompts treasury pay early optimization recommendations.
-2. **Missing Purchase Order Link**:
-   * **Action**: Upload a file containing the keyword `missing_po` (e.g. `missing_po_invoice.png`).
-   * **Result**: Status maps to `EXCEPTION` and triggers a `MISSING_PO` exception block.
-3. **Unit Price Discrepancy**:
-   * **Action**: Upload a file containing the keyword `price_variance` (e.g. `invoice_price_variance.jpg`).
-   * **Result**: Raises a `PRICE_VARIANCE` exception for line items and routes them to the Finance manager.
-4. **Quantity Discrepancy**:
-   * **Action**: Upload a file containing the keyword `qty_variance` (e.g. `qty_variance_bill.png`).
-   * **Result**: Raises a `QUANTITY_VARIANCE` exception comparing invoice vs goods receipt and routes it to the department approver.
+   * **Filename containing**: `acme` or `globex` (e.g., `acme_invoice.pdf`)
+   * **Result**: Invoice matches completely against PO-99541, status maps to `MATCHED` or `APPROVED`, and treasury WACC analysis is triggered.
+2. **Unit Price Discrepancy Exception**:
+   * **Filename containing**: `initech` (e.g., `initech_bill.pdf`)
+   * **Result**: Raises a `PRICE_VARIANCE` exception because the invoiced unit price exceeds PO-99543 unit prices.
+3. **Missing Purchase Order Link Exception**:
+   * **Filename containing**: `olivia` (e.g., `olivia_consulting.png`)
+   * **Result**: Raises a `MISSING_PO` exception. The invoice is automatically flagged and sent to the AP Specialist triage queue.
+
+---
+
+## 7. Relevant Code Files
+
+* [Backend/main.py](file:///D:/VendorPulse/Backend/main.py): Core FastAPI web server, routes, and matching logic.
+* [Backend/database.py](file:///D:/VendorPulse/Backend/database.py): SQLite SQLAlchemy ORM schemas, database models, and seeding logic.
+* [Backend/document_ai_ocr.py](file:///D:/VendorPulse/Backend/document_ai_ocr.py): Google Cloud Document AI processing client wrapper.
+* [Frontend/src/App.tsx](file:///D:/VendorPulse/Frontend/src/App.tsx): Root React entrypoint that drives the dashboard views.
+* [run.bat](file:///D:/VendorPulse/run.bat): Batch execution script for quick local startup.
