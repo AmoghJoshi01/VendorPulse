@@ -23,7 +23,7 @@ import { Invoice, Vendor, PurchaseOrder, Analytics, Settings } from './types';
 const API_BASE = 'http://127.0.0.1:8000/api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'matching' | 'settings' | 'portal'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'invoices' | 'matching' | 'settings' | 'portal'>('dashboard');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -33,6 +33,13 @@ export default function App() {
   const [uploading, setUploading] = useState<boolean>(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [resolutionComment, setResolutionComment] = useState<string>('');
+  
+  // Custom File Uploader States
+  const [customFile, setCustomFile] = useState<File | null>(null);
+  const [uploadResult, setUploadResult] = useState<Invoice | null>(null);
+  const [customUploading, setCustomUploading] = useState<boolean>(false);
+  const [customUploadError, setCustomUploadError] = useState<string | null>(null);
+  const [uploadStep, setUploadStep] = useState<number>(0);
   
   // Simulation templates for Pitch / Demo
   const demoFiles = [
@@ -168,6 +175,49 @@ export default function App() {
     }
   };
 
+  const handleCustomFileUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customFile) return;
+    
+    setCustomUploading(true);
+    setCustomUploadError(null);
+    setUploadResult(null);
+    setUploadStep(0);
+    
+    // Animate upload steps for higher-fidelity user experience
+    const stepInterval = setInterval(() => {
+      setUploadStep(prev => (prev < 4 ? prev + 1 : prev));
+    }, 1200);
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', customFile);
+      
+      const res = await fetch(`${API_BASE}/invoices/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      clearInterval(stepInterval);
+      
+      if (res.ok) {
+        const data = await res.json();
+        setUploadStep(5);
+        setUploadResult(data);
+        // Refresh analytics and ledger
+        await fetchData();
+      } else {
+        const err = await res.text();
+        setCustomUploadError(err || 'Failed to upload and process file.');
+      }
+    } catch (err: any) {
+      clearInterval(stepInterval);
+      setCustomUploadError(err.message || 'An error occurred during upload.');
+    } finally {
+      setCustomUploading(false);
+    }
+  };
+
   // Helper formatting functions
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
@@ -291,6 +341,18 @@ export default function App() {
                 >
                   <TrendingUp className="w-4.5 h-4.5" />
                   <span>Treasury Analytics</span>
+                </button>
+
+                <button 
+                  onClick={() => setActiveTab('upload')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === 'upload' 
+                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                  }`}
+                >
+                  <Upload className="w-4.5 h-4.5" />
+                  <span>Document Ingestion</span>
                 </button>
 
                 <button 
@@ -614,6 +676,236 @@ export default function App() {
                       Process Pending Ledger <ChevronRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: DOCUMENT INGESTION (CUSTOM UPLOAD) */}
+          {activeTab === 'upload' && (
+            <div className="space-y-8 animate-fade-in">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight text-white">Document Ingestion Pipeline</h2>
+                <p className="text-sm text-slate-400">Upload a custom PDF or image invoice to test live OCR extraction, 3-way matching, and WACC yield calculations.</p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* Left side: Upload Form */}
+                <div className="lg:col-span-5 bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 space-y-6 shadow-sm">
+                  <h3 className="text-base font-bold text-white">1. Select Document Payload</h3>
+                  
+                  <form onSubmit={handleCustomFileUpload} className="space-y-6">
+                    {/* Drag and Drop Zone */}
+                    <div className="flex justify-center items-center w-full">
+                      <label 
+                        htmlFor="dropzone-file" 
+                        className={`flex flex-col justify-center items-center w-full h-64 rounded-2xl border-2 border-dashed transition-all cursor-pointer ${
+                          customFile 
+                            ? 'border-emerald-500/50 bg-emerald-500/[0.02]' 
+                            : 'border-slate-800 hover:border-slate-700 bg-slate-950/40 hover:bg-slate-900/30'
+                        }`}
+                      >
+                        <div className="flex flex-col justify-center items-center pt-5 pb-6 px-4 text-center">
+                          <Upload className={`w-10 h-10 mb-4 transition-colors ${customFile ? 'text-emerald-400' : 'text-slate-500'}`} />
+                          {customFile ? (
+                            <div className="space-y-2">
+                              <p className="text-sm font-semibold text-white truncate max-w-xs">{customFile.name}</p>
+                              <p className="text-xs text-slate-400">
+                                {(customFile.size / 1024).toFixed(1)} KB — {customFile.type.split('/')[1]?.toUpperCase()}
+                              </p>
+                              <span className="inline-block mt-2 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">
+                                Ready for extraction
+                              </span>
+                            </div>
+                          ) : (
+                            <div>
+                              <p className="mb-2 text-sm text-slate-300 font-semibold">
+                                <span className="text-emerald-400 hover:underline">Click to browse</span> or drag and drop
+                              </p>
+                              <p className="text-xs text-slate-500">PDF, PNG, JPG, or JPEG (Max 10MB)</p>
+                            </div>
+                          )}
+                        </div>
+                        <input 
+                          id="dropzone-file" 
+                          type="file" 
+                          className="hidden" 
+                          onChange={(e) => {
+                            setCustomFile(e.target.files?.[0] || null);
+                            setUploadResult(null);
+                            setCustomUploadError(null);
+                          }} 
+                          accept=".pdf,.png,.jpg,.jpeg" 
+                        />
+                      </label>
+                    </div>
+
+                    {customFile && (
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={customUploading}
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white p-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10"
+                        >
+                          {customUploading ? 'Processing...' : '🚀 Execute Live OCR Ingestion'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={customUploading}
+                          onClick={() => {
+                            setCustomFile(null);
+                            setUploadResult(null);
+                            setCustomUploadError(null);
+                          }}
+                          className="bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-400 p-3 rounded-xl text-sm font-bold transition-all"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    )}
+                  </form>
+
+                  {customUploadError && (
+                    <div className="bg-red-500/5 border border-red-500/20 text-red-400 text-xs p-4 rounded-xl flex items-start gap-2 leading-relaxed">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{customUploadError}</span>
+                    </div>
+                  )}
+
+                  {/* Loading Steps Animation */}
+                  {customUploading && (
+                    <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex items-center gap-3">
+                        <RefreshCw className="w-5 h-5 text-emerald-400 animate-spin" />
+                        <span className="text-sm font-bold text-white">Ingesting Invoice...</span>
+                      </div>
+                      <div className="space-y-2 text-xs">
+                        <div className={`flex items-center gap-2 ${uploadStep >= 0 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          <span className="w-2 h-2 rounded-full bg-current"></span>
+                          <span>Uploading document payload...</span>
+                        </div>
+                        <div className={`flex items-center gap-2 ${uploadStep >= 1 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          <span className="w-2 h-2 rounded-full bg-current"></span>
+                          <span>Initializing Google Document AI Processor...</span>
+                        </div>
+                        <div className={`flex items-center gap-2 ${uploadStep >= 2 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          <span className="w-2 h-2 rounded-full bg-current"></span>
+                          <span>Extracting fields: vendor, total, net_days, terms...</span>
+                        </div>
+                        <div className={`flex items-center gap-2 ${uploadStep >= 3 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          <span className="w-2 h-2 rounded-full bg-current"></span>
+                          <span>Cross-referencing Purchase Orders & Goods Receipts...</span>
+                        </div>
+                        <div className={`flex items-center gap-2 ${uploadStep >= 4 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          <span className="w-2 h-2 rounded-full bg-current"></span>
+                          <span>Calculating ROI yield on early payment discount...</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right side: Realtime Parsing Results */}
+                <div className="lg:col-span-7 space-y-6">
+                  {uploadResult ? (
+                    <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 space-y-6 shadow-sm animate-fade-in">
+                      <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Extraction Ledger Outcome</h3>
+                          <p className="text-xs text-slate-400">Live AI parsing successfully completed.</p>
+                        </div>
+                        <span className="bg-teal-500/10 text-teal-400 border border-teal-500/20 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> 100% Live
+                        </span>
+                      </div>
+
+                      {/* Yield Recommendation */}
+                      <div className={`p-4 rounded-xl border ${
+                        uploadResult.early_payment_status === 'OPTIMAL_PAID_EARLY'
+                          ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400'
+                          : 'bg-indigo-500/5 border-indigo-500/20 text-indigo-400'
+                      }`}>
+                        <h4 className="text-xs font-bold uppercase tracking-wider">Treasury Decision Recommendation</h4>
+                        {uploadResult.early_payment_status === 'OPTIMAL_PAID_EARLY' ? (
+                          <div className="mt-2 text-sm leading-relaxed">
+                            📊 **APPROVE FOR IMMEDIATE PAYMENT**: Implied annual return (**{uploadResult.implied_annual_yield.toFixed(1)}%**) exceeds WACC (**{settings.cost_of_capital.toFixed(1)}%**). Captures instant savings of **{formatCurrency(uploadResult.cash_savings)}**.
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm leading-relaxed">
+                            🛑 **HOLD PAYMENT UNTIL DUE DATE**: Discount return (**{uploadResult.implied_annual_yield.toFixed(1)}%**) is lower than cost of capital (**{settings.cost_of_capital.toFixed(1)}%**). Pay total net balance exactly on Day **{uploadResult.net_period_days}**.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Matching Analysis */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 space-y-2">
+                          <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">3-Way Match QA Result</span>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                              uploadResult.matching_result === 'THREE_WAY_OK'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                            }`}>
+                              {uploadResult.matching_result}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-400 leading-normal mt-2">
+                            {uploadResult.exception 
+                              ? uploadResult.exception.description
+                              : `Invoice matched corresponding PO ${uploadResult.purchase_order_number} and Goods Receipt records perfectly.`
+                            }
+                          </p>
+                        </div>
+
+                        <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 space-y-2 flex flex-col justify-between">
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">AP Ledger ID</span>
+                            <p className="text-sm font-semibold text-white mt-1">{uploadResult.id}</p>
+                          </div>
+                          <div className="flex gap-2 pt-4">
+                            <button
+                              onClick={() => {
+                                setSelectedInvoice(uploadResult);
+                                setActiveTab('matching');
+                              }}
+                              className="flex-1 bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-xs py-2 rounded-lg font-bold transition-all text-center"
+                            >
+                              Inspect Match
+                            </button>
+                            <button
+                              onClick={() => setActiveTab('invoices')}
+                              className="flex-1 bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-xs py-2 rounded-lg font-bold transition-all text-center"
+                            >
+                              Ledger Inbox
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Fields Table */}
+                      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 space-y-3">
+                        <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Extracted Metadata</span>
+                        <div className="text-xs divide-y divide-slate-800">
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Vendor/Supplier Name</span><span className="font-semibold text-white">{uploadResult.vendor_name}</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Invoice Number</span><span className="font-semibold text-white">{uploadResult.invoice_number}</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Invoice Gross Amount</span><span className="font-bold text-white">{formatCurrency(uploadResult.invoice_amount)}</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">PO reference number</span><span className="font-semibold text-white">{uploadResult.purchase_order_number}</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Payment Terms</span><span className="font-semibold text-white">{uploadResult.payment_terms}</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Discount Percentage</span><span className="font-semibold text-white">{(uploadResult.early_payment_discount_percentage * 100).toFixed(1)}%</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Discount Period</span><span className="font-semibold text-white">{uploadResult.discount_period_days} Days</span></div>
+                          <div className="flex justify-between py-2"><span className="text-slate-400">Net Period</span><span className="font-semibold text-white">{uploadResult.net_period_days} Days</span></div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-12 text-center text-slate-500 italic shadow-sm flex flex-col items-center justify-center h-full min-h-[300px]">
+                      <FileText className="w-12 h-12 text-slate-700 mb-3" />
+                      <p className="max-w-md text-xs leading-normal">
+                        Select a file and execute OCR to parse details. The extracted fields, matching outcomes, and cash yields will display here in real time.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

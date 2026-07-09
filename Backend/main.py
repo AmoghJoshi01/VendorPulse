@@ -418,7 +418,7 @@ def upload_invoice(file: UploadFile = File(...)):
     file_name = file.filename.lower()
     
     # Try to find a matches in name to return appropriate mock flow
-    mock_key = "olivia"
+    mock_key = None
     if "acme" in file_name:
         mock_key = "acme"
     elif "globex" in file_name:
@@ -426,10 +426,26 @@ def upload_invoice(file: UploadFile = File(...)):
     elif "initech" in file_name:
         mock_key = "initech"
     
-    invoice_data = MOCK_INVOICE_DATA_SUITE[mock_key].copy()
+    invoice_data = {}
+    if mock_key:
+        invoice_data = MOCK_INVOICE_DATA_SUITE[mock_key].copy()
+    else:
+        # Default empty skeleton for custom files
+        invoice_data = {
+            "vendor_name": "Unknown Vendor",
+            "invoice_number": "N/A",
+            "invoice_amount": 0.0,
+            "purchase_order_number": "N/A",
+            "payment_terms": "Net 30",
+            "early_payment_discount_percentage": 0.0,
+            "discount_period_days": 0,
+            "net_period_days": 30
+        }
     
     # 2. RUN LIVE AI EXTRACTION
     use_live_ai = False
+    doc_ai_error = None
+    gemini_error = None
     
     # Check if Google Document AI is configured
     gcp_project = os.environ.get("GCP_PROJECT_ID")
@@ -458,6 +474,7 @@ def upload_invoice(file: UploadFile = File(...)):
             use_live_ai = True
             print("[Backend] Successfully processed invoice using Google Document AI!")
         except Exception as e:
+            doc_ai_error = str(e)
             print(f"DEBUG BACKEND LIVE DOCUMENT AI ERROR: {e}")
             use_live_ai = False
             
@@ -508,8 +525,22 @@ def upload_invoice(file: UploadFile = File(...)):
                 
                 use_live_ai = True
             except Exception as e:
+                gemini_error = str(e)
                 print(f"DEBUG BACKEND LIVE GEMINI ERROR: {e}")
                 use_live_ai = False
+
+    # 2.5 IF CUSTOM UPLOAD AND AI FAILED, RAISE EXPLICIT ERROR
+    if not use_live_ai and not mock_key:
+        error_details = []
+        if doc_ai_error:
+            error_details.append(f"Google Document AI: {doc_ai_error}")
+        if gemini_error:
+            error_details.append(f"Gemini Fallback: {gemini_error}")
+            
+        error_msg = "Live AI extraction failed. " + " | ".join(error_details)
+        if not gcp_project or not docai_processor:
+            error_msg += " (Google Document AI not configured - check GCP_PROJECT_ID and DOCUMENT_AI_PROCESSOR_ID in .env)"
+        raise HTTPException(status_code=500, detail=error_msg)
 
     # 3. 3-WAY MATCHING ENGINE & EXCEPTION ROUTING
     po_num = invoice_data.get("purchase_order_number", "N/A")
