@@ -138,7 +138,7 @@ class DocumentAIExtractor:
         Clean the layout, structure the key fields, and output a valid JSON object matching this schema:
         
         {{
-            "vendor_name": "Vendor/Company Name (or 'Unknown Vendor')",
+            "vendor_name": "The exact name of the SUPPLIER/SELLER issuing the invoice (usually at the very top or under 'From:', 'Invoice From:', 'Sold By:'). Do NOT extract the customer/buyer/recipient name (e.g. listed under 'Bill To:', 'Billed To:', 'To:').",
             "invoice_number": "Invoice ID/Number (use 'N/A' if missing)",
             "invoice_amount": total amount to pay as a float/number (e.g. 1250.00),
             "purchase_order_number": "PO reference number if present (use 'N/A' if missing)",

@@ -492,7 +492,7 @@ def upload_invoice(file: UploadFile = File(...)):
                 You are an expert accounts payable auditing system. Analyze the uploaded invoice document.
                 Extract the data into a valid JSON object matching this schema:
                 {
-                    "vendor_name": "Extract the sender/seller name from header",
+                    "vendor_name": "The exact name of the SUPPLIER/SELLER issuing the invoice (usually at the very top or under 'From:', 'Invoice From:', 'Sold By:'). Do NOT extract the customer/buyer/recipient name (e.g. listed under 'Bill To:', 'Billed To:', 'To:').",
                     "invoice_number": "Extract the invoice number ID",
                     "invoice_amount": Extract total bill value as a raw number/float (e.g. 755.00),
                     "purchase_order_number": "Look for PO number, if none found use 'N/A' or 'None'",
