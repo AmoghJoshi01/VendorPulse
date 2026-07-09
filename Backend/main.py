@@ -182,7 +182,7 @@ def parse_invoice_with_gemini(file_bytes: bytes, mime_type: str) -> dict:
         """
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=[
                 types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
                 prompt
@@ -810,28 +810,42 @@ async def upload_invoice(
     # Store PO number temporarily
     invoice.purchase_order_number = invoice_data.get("purchase_order_number")
     
-    db.add(invoice)
-    db.flush()
+    try:
+        db.add(invoice)
+        db.flush()
 
-    # Execute 3-Way Match Verification Pipeline
-    execute_3_way_match(db, invoice, invoice_data.get("line_items", []))
+        # Execute 3-Way Match Verification Pipeline
+        execute_3_way_match(db, invoice, invoice_data.get("line_items", []))
 
-    # Evaluate Early Payment Yield Recommendation
-    d = float(invoice.vendor.default_discount_pct)
-    t_early = float(invoice.vendor.discount_days)
-    t_net = float(invoice.vendor.net_days)
-    days_saved = t_net - t_early
+        # Evaluate Early Payment Yield Recommendation
+        d = float(invoice.vendor.default_discount_pct)
+        t_early = float(invoice.vendor.discount_days)
+        t_net = float(invoice.vendor.net_days)
+        days_saved = t_net - t_early
 
-    if days_saved > 0 and d > 0:
-        implied_annual_yield = (d / (1.0 - d)) * (365.0 / days_saved)
-        if implied_annual_yield * 100.0 > float(org.cost_of_capital):
-            invoice.early_payment_status = "OPTIMAL_PAID_EARLY"
+        if days_saved > 0 and d > 0:
+            implied_annual_yield = (d / (1.0 - d)) * (365.0 / days_saved)
+            if implied_annual_yield * 100.0 > float(org.cost_of_capital):
+                invoice.early_payment_status = "OPTIMAL_PAID_EARLY"
+            else:
+                invoice.early_payment_status = "OPTIMAL_PAID_NET"
         else:
             invoice.early_payment_status = "OPTIMAL_PAID_NET"
-    else:
-        invoice.early_payment_status = "OPTIMAL_PAID_NET"
 
-    db.commit()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        from sqlalchemy.exc import IntegrityError
+        if isinstance(e, IntegrityError) or "UNIQUE constraint" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invoice number '{invoice.invoice_number}' already exists in the system for supplier '{vendor_name}'."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process invoice matching: {str(e)}"
+        )
+
     return format_invoice(invoice, db)
 
 
