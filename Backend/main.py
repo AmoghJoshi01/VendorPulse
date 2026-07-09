@@ -469,7 +469,11 @@ def upload_invoice(file: UploadFile = File(...)):
                     invoice_data[key] = parsed[key]
             for key in ["early_payment_discount_percentage", "discount_period_days", "net_period_days"]:
                 if key in parsed:
-                    invoice_data[key] = float(parsed[key]) if key == "early_payment_discount_percentage" else int(parsed[key])
+                    val = parsed[key]
+                    if val is None or val == "" or val == "None" or val == "N/A":
+                        invoice_data[key] = 0.0 if key == "early_payment_discount_percentage" else 0
+                    else:
+                        invoice_data[key] = float(val) if key == "early_payment_discount_percentage" else int(float(val))
             
             use_live_ai = True
             print("[Backend] Successfully processed invoice using Google Document AI!")
@@ -521,7 +525,11 @@ def upload_invoice(file: UploadFile = File(...)):
                         invoice_data[key] = parsed[key]
                 for key in ["early_payment_discount_percentage", "discount_period_days", "net_period_days"]:
                     if key in parsed:
-                        invoice_data[key] = float(parsed[key]) if key == "early_payment_discount_percentage" else int(parsed[key])
+                        val = parsed[key]
+                        if val is None or val == "" or val == "None" or val == "N/A":
+                            invoice_data[key] = 0.0 if key == "early_payment_discount_percentage" else 0
+                        else:
+                            invoice_data[key] = float(val) if key == "early_payment_discount_percentage" else int(float(val))
                 
                 use_live_ai = True
             except Exception as e:
