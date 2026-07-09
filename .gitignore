@@ -1,2 +1,5 @@
 .env
 __pycache__/
+Backend/db.json
+venv/
+.venv/

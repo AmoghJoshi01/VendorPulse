@@ -58,3 +58,5 @@ urllib3==2.7.0
 uvicorn==0.51.0
 watchdog==6.0.0
 websockets==16.0
+fastapi
+google-cloud-documentai
