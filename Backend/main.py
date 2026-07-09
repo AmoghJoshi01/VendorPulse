@@ -501,7 +501,7 @@ def upload_invoice(file: UploadFile = File(...)):
                 """
                 
                 response = client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model='gemini-2.5-flash',
                     contents=[
                         types.Part.from_bytes(data=file_bytes, mime_type=mime),
                         prompt
