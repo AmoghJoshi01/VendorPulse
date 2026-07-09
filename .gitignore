@@ -6,3 +6,7 @@ backend/vendorpulse.db
 Backend/db.json
 venv/
 .venv/
+*.json
+.vite/
+.vite
+frontend/.vite/

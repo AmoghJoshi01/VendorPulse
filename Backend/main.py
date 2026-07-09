@@ -20,6 +20,9 @@ from database import (
 )
 
 # Attempt live GenAI Setup
+from dotenv import load_dotenv
+load_dotenv()
+
 from google import genai
 from google.genai import types
 
