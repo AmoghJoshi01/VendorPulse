@@ -1,2 +1,5 @@
 .env
 __pycache__/
+*.db
+vendorpulse.db
+backend/vendorpulse.db
