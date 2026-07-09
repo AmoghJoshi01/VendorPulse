@@ -84,6 +84,8 @@ class Organization(Base):
     clerk_org_id = Column(String(255), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     cost_of_capital = Column(Numeric(5, 2), default=Decimal("6.00"))
+    cash_balance = Column(Numeric(15, 2), default=Decimal("150000.00"))
+    minimum_liquidity_threshold = Column(Numeric(15, 2), default=Decimal("25000.00"))
     base_currency = Column(String(3), default="USD")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -348,6 +350,8 @@ def init_db(seed: bool = True):
                 clerk_org_id="org_2tJ8XWn6qE",
                 name="Acme Corporation",
                 cost_of_capital=Decimal("6.00"),
+                cash_balance=Decimal("150000.00"),
+                minimum_liquidity_threshold=Decimal("25000.00"),
                 base_currency="USD"
             )
             db.add(org)
@@ -373,79 +377,271 @@ def init_db(seed: bool = True):
             db.add_all([finance_mgr, approver])
             db.flush()
             
-            # 3. Create Vendor
-            vendor = Vendor(
+            # 3. Create Vendors
+            v_acme = Vendor(
                 organization_id=org.id,
                 name="Acme Industrial Supplies Ltd.",
-                email="billing@acmeindustrial.com",
+                email="ap@acmeindustrial.com",
                 payment_terms="2/10 Net 30",
                 default_discount_pct=Decimal("0.0200"),
                 discount_days=10,
                 net_days=30,
-                bank_name="Chase Manhattan",
+                bank_name="Chase Bank",
                 bank_routing_number="021000021",
-                bank_account_number="1234567890",
+                bank_account_number="1234567829",
                 status="ACTIVE"
             )
-            db.add(vendor)
-            db.flush()
-            
-            # 4. Create Purchase Order
-            po = PurchaseOrder(
+            v_globex = Vendor(
                 organization_id=org.id,
-                vendor_id=vendor.id,
+                name="Globex Logistics",
+                email="billing@globex.com",
+                payment_terms="Net 30",
+                default_discount_pct=Decimal("0.0000"),
+                discount_days=0,
+                net_days=30,
+                bank_name="Bank of America",
+                bank_routing_number="026009593",
+                bank_account_number="9876543210",
+                status="ACTIVE"
+            )
+            v_initech = Vendor(
+                organization_id=org.id,
+                name="Initech IT Solutions",
+                email="accounts@initech.com",
+                payment_terms="1/15 Net 45",
+                default_discount_pct=Decimal("0.0100"),
+                discount_days=15,
+                net_days=45,
+                bank_name="Wells Fargo",
+                bank_routing_number="121000248",
+                bank_account_number="5678901234",
+                status="ACTIVE"
+            )
+            v_olivia = Vendor(
+                organization_id=org.id,
+                name="Olivia Wilson Consulting",
+                email="olivia@wilsonconsulting.co",
+                payment_terms="3/10 Net 30",
+                default_discount_pct=Decimal("0.0300"),
+                discount_days=10,
+                net_days=30,
+                bank_name="CitiBank",
+                bank_routing_number="021000089",
+                bank_account_number="3456789012",
+                status="ACTIVE"
+            )
+            db.add_all([v_acme, v_globex, v_initech, v_olivia])
+            db.flush()
+
+            # 4. Create Purchase Orders & Items
+            po_acme = PurchaseOrder(
+                organization_id=org.id,
+                vendor_id=v_acme.id,
                 po_number="PO-99541",
-                issue_date=date(2026, 6, 1),
+                issue_date=date(2026, 6, 15),
                 total_amount=Decimal("755.00"),
                 department="Operations",
                 status="OPEN"
             )
-            db.add(po)
+            po_globex = PurchaseOrder(
+                organization_id=org.id,
+                vendor_id=v_globex.id,
+                po_number="PO-99542",
+                issue_date=date(2026, 6, 20),
+                total_amount=Decimal("1200.00"),
+                department="Supply Chain",
+                status="OPEN"
+            )
+            po_initech = PurchaseOrder(
+                organization_id=org.id,
+                vendor_id=v_initech.id,
+                po_number="PO-99543",
+                issue_date=date(2026, 6, 25),
+                total_amount=Decimal("5000.00"),
+                department="Information Technology",
+                status="OPEN"
+            )
+            db.add_all([po_acme, po_globex, po_initech])
             db.flush()
 
-            # 4b. Create PO Items
-            po_item1 = PurchaseOrderItem(
-                purchase_order_id=po.id,
-                item_description="Heavy Duty Steel Bolts",
+            # PO Items
+            po_item_acme1 = PurchaseOrderItem(
+                purchase_order_id=po_acme.id,
+                item_description="Industrial Safety Gloves",
                 quantity=Decimal("10.0"),
-                unit_price=Decimal("50.00"),
-                total_price=Decimal("500.00")
-            )
-            po_item2 = PurchaseOrderItem(
-                purchase_order_id=po.id,
-                item_description="Industrial Lubricant Spray",
-                quantity=Decimal("5.0"),
-                unit_price=Decimal("51.00"),
+                unit_price=Decimal("25.50"),
                 total_price=Decimal("255.00")
             )
-            db.add_all([po_item1, po_item2])
-            db.flush()
-            
-            # 5. Create Goods Receipt
-            gr = GoodsReceipt(
-                organization_id=org.id,
-                purchase_order_id=po.id,
-                receipt_number="GR-5512",
-                received_date=date(2026, 6, 5),
-                status="RECEIVED"
+            po_item_acme2 = PurchaseOrderItem(
+                purchase_order_id=po_acme.id,
+                item_description="Heavy Duty Steel Boots",
+                quantity=Decimal("5.0"),
+                unit_price=Decimal("100.00"),
+                total_price=Decimal("500.00")
             )
-            db.add(gr)
+            po_item_globex = PurchaseOrderItem(
+                purchase_order_id=po_globex.id,
+                item_description="Freight & Warehousing Services",
+                quantity=Decimal("1.0"),
+                unit_price=Decimal("1200.00"),
+                total_price=Decimal("1200.00")
+            )
+            po_item_initech = PurchaseOrderItem(
+                purchase_order_id=po_initech.id,
+                item_description="Enterprise Software Licensing",
+                quantity=Decimal("1.0"),
+                unit_price=Decimal("5000.00"),
+                total_price=Decimal("5000.00")
+            )
+            db.add_all([po_item_acme1, po_item_acme2, po_item_globex, po_item_initech])
             db.flush()
 
-            # 5b. Create Goods Receipt Items
-            gr_item1 = GoodsReceiptItem(
-                goods_receipt_id=gr.id,
-                purchase_order_item_id=po_item1.id,
+            # 5. Create Goods Receipts & Items
+            gr_acme = GoodsReceipt(
+                organization_id=org.id,
+                purchase_order_id=po_acme.id,
+                receipt_number="GR-88421",
+                received_date=date(2026, 6, 18),
+                status="RECEIVED"
+            )
+            gr_globex = GoodsReceipt(
+                organization_id=org.id,
+                purchase_order_id=po_globex.id,
+                receipt_number="GR-88422",
+                received_date=date(2026, 6, 22),
+                status="RECEIVED"
+            )
+            gr_initech = GoodsReceipt(
+                organization_id=org.id,
+                purchase_order_id=po_initech.id,
+                receipt_number="GR-88423",
+                received_date=date(2026, 6, 28),
+                status="RECEIVED"
+            )
+            db.add_all([gr_acme, gr_globex, gr_initech])
+            db.flush()
+
+            gr_item_acme1 = GoodsReceiptItem(
+                goods_receipt_id=gr_acme.id,
+                purchase_order_item_id=po_item_acme1.id,
                 quantity_received=Decimal("10.0")
             )
-            gr_item2 = GoodsReceiptItem(
-                goods_receipt_id=gr.id,
-                purchase_order_item_id=po_item2.id,
+            gr_item_acme2 = GoodsReceiptItem(
+                goods_receipt_id=gr_acme.id,
+                purchase_order_item_id=po_item_acme2.id,
                 quantity_received=Decimal("5.0")
             )
-            db.add_all([gr_item1, gr_item2])
-            
-            # 6. Create Approval Rule (Approvals under $1000 routed to Robert Smith)
+            gr_item_globex = GoodsReceiptItem(
+                goods_receipt_id=gr_globex.id,
+                purchase_order_item_id=po_item_globex.id,
+                quantity_received=Decimal("1.0")
+            )
+            gr_item_initech = GoodsReceiptItem(
+                goods_receipt_id=gr_initech.id,
+                purchase_order_item_id=po_item_initech.id,
+                quantity_received=Decimal("1.0")
+            )
+            db.add_all([gr_item_acme1, gr_item_acme2, gr_item_globex, gr_item_initech])
+            db.flush()
+
+            # 6. Create Default Invoices
+            inv1 = Invoice(
+                organization_id=org.id,
+                vendor_id=v_acme.id,
+                purchase_order_id=po_acme.id,
+                invoice_number="INV-2026-8942",
+                amount=Decimal("755.00"),
+                tax_amount=Decimal("0.00"),
+                issue_date=date(2026, 7, 1),
+                due_date=date(2026, 7, 31),
+                payment_terms="2/10 Net 30",
+                file_url="s3://vendorpulse-invoices/acme_industrial_inv_8942.pdf",
+                status="APPROVED",
+                matching_result="THREE_WAY_OK",
+                early_payment_status="OPTIMAL_PAID_EARLY"
+            )
+            inv2 = Invoice(
+                organization_id=org.id,
+                vendor_id=v_globex.id,
+                purchase_order_id=po_globex.id,
+                invoice_number="INV-2026-9051",
+                amount=Decimal("1200.00"),
+                tax_amount=Decimal("0.00"),
+                issue_date=date(2026, 7, 5),
+                due_date=date(2026, 8, 4),
+                payment_terms="Net 30",
+                file_url="s3://vendorpulse-invoices/globex_freight_inv_9051.jpeg",
+                status="PENDING_MATCH",
+                matching_result="THREE_WAY_OK",
+                early_payment_status="CALCULATED"
+            )
+            inv3 = Invoice(
+                organization_id=org.id,
+                vendor_id=v_initech.id,
+                purchase_order_id=po_initech.id,
+                invoice_number="INV-2026-9113",
+                amount=Decimal("5400.00"),
+                tax_amount=Decimal("0.00"),
+                issue_date=date(2026, 7, 8),
+                due_date=date(2026, 8, 22),
+                payment_terms="1/15 Net 45",
+                file_url="s3://vendorpulse-invoices/initech_software_inv_9113.pdf",
+                status="EXCEPTION",
+                matching_result="PRICE_MISMATCH",
+                early_payment_status="CALCULATED"
+            )
+            db.add_all([inv1, inv2, inv3])
+            db.flush()
+
+            # Invoice Items
+            inv1_item1 = InvoiceItem(
+                invoice_id=inv1.id,
+                purchase_order_item_id=po_item_acme1.id,
+                item_description="Industrial Safety Gloves",
+                quantity=Decimal("10.0"),
+                unit_price=Decimal("25.50"),
+                total_price=Decimal("255.00")
+            )
+            inv1_item2 = InvoiceItem(
+                invoice_id=inv1.id,
+                purchase_order_item_id=po_item_acme2.id,
+                item_description="Heavy Duty Steel Boots",
+                quantity=Decimal("5.0"),
+                unit_price=Decimal("100.00"),
+                total_price=Decimal("500.00")
+            )
+            inv2_item = InvoiceItem(
+                invoice_id=inv2.id,
+                purchase_order_item_id=po_item_globex.id,
+                item_description="Freight & Warehousing Services",
+                quantity=Decimal("1.0"),
+                unit_price=Decimal("1200.00"),
+                total_price=Decimal("1200.00")
+            )
+            inv3_item = InvoiceItem(
+                invoice_id=inv3.id,
+                purchase_order_item_id=po_item_initech.id,
+                item_description="Enterprise Software Licensing",
+                quantity=Decimal("1.0"),
+                unit_price=Decimal("5400.00"),
+                total_price=Decimal("5400.00")
+            )
+            db.add_all([inv1_item1, inv1_item2, inv2_item, inv3_item])
+            db.flush()
+
+            # Create Exception for Initech
+            exc = InvoiceException(
+                invoice_id=inv3.id,
+                exception_type="PRICE_VARIANCE",
+                description="Invoice total ($5,400.00) exceeds PO-99543 total ($5,000.00) by $400.00 (8.0% variance, limit is 0.5%).",
+                confidence_score=Decimal("92.40"),
+                predicted_approver_id=approver.id,
+                assigned_approver_id=approver.id,
+                status="OPEN"
+            )
+            db.add(exc)
+
+            # 7. Create Approval Rule (Approvals under $1000 routed to Robert Smith)
             rule = ApprovalRule(
                 organization_id=org.id,
                 department="Operations",
