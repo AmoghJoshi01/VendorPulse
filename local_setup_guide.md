@@ -116,7 +116,7 @@ In your file explorer or terminal, run the batch script:
 | :--- | :--- | :--- | :--- |
 | **FastAPI Backend** | `/` (Project Root) | `python Backend/main.py` | `http://127.0.0.1:8000` |
 | **Swagger OpenAPI** | `/` (Project Root) | *(Available when Backend is running)* | `http://127.0.0.1:8000/docs` |
-| **React Frontend** | `/Frontend` | `npm run dev` | `http://localhost:5173` |
+| **React Frontend** | `/Frontend` | `npm run dev -- --host 127.0.0.1` | `http://localhost:5173` |
 | **Streamlit Showcase** | `/` (Project Root) | `streamlit run Backend/app.py` | `http://localhost:8501` |
 
 ---

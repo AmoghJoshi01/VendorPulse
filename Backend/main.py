@@ -33,6 +33,7 @@ from database import (
     Invoice, InvoiceException, ApprovalRule, ApprovalHistory, ExceptionRoutingHistory,
     PurchaseOrderItem, GoodsReceiptItem, InvoiceItem
 )
+from auth import get_current_user
 
 # Attempt live GenAI Setup
 from dotenv import load_dotenv
@@ -494,8 +495,8 @@ def format_invoice(invoice: Invoice, db: Session) -> Dict[str, Any]:
 # =========================================================================
 
 @app.get("/api/settings")
-def get_settings(db: Session = Depends(get_db)):
-    org = db.query(Organization).first()
+def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization settings not found")
     return {
@@ -506,8 +507,8 @@ def get_settings(db: Session = Depends(get_db)):
 
 
 @app.post("/api/settings")
-def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
-    org = db.query(Organization).first()
+def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization settings not found")
         
@@ -516,7 +517,10 @@ def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
     org.cash_balance = Decimal(str(settings.cash_balance))
     
     # Recalculate recommendations for outstanding invoices
-    invoices = db.query(Invoice).filter(Invoice.status.in_(["PENDING_MATCH", "EXCEPTION", "APPROVED"])).all()
+    invoices = db.query(Invoice).filter(
+        Invoice.status.in_(["PENDING_MATCH", "EXCEPTION", "APPROVED"]),
+        Invoice.organization_id == current_user.organization_id
+    ).all()
     for inv in invoices:
         d = float(inv.vendor.default_discount_pct) if inv.vendor else 0.0
         t_early = float(inv.vendor.discount_days) if inv.vendor else 0.0
@@ -540,8 +544,8 @@ def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
 
 
 @app.get("/api/vendors")
-def get_vendors(db: Session = Depends(get_db)):
-    vendors = db.query(Vendor).all()
+def get_vendors(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    vendors = db.query(Vendor).filter(Vendor.organization_id == current_user.organization_id).all()
     return [
         {
             "id": str(v.id),
@@ -561,8 +565,8 @@ def get_vendors(db: Session = Depends(get_db)):
 
 
 @app.get("/api/pos")
-def get_pos(db: Session = Depends(get_db)):
-    pos = db.query(PurchaseOrder).all()
+def get_pos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    pos = db.query(PurchaseOrder).filter(PurchaseOrder.organization_id == current_user.organization_id).all()
     return [
         {
             "id": str(po.id),
@@ -587,15 +591,15 @@ def get_pos(db: Session = Depends(get_db)):
 
 
 @app.get("/api/invoices")
-def get_invoices(db: Session = Depends(get_db)):
-    invoices = db.query(Invoice).all()
+def get_invoices(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    invoices = db.query(Invoice).filter(Invoice.organization_id == current_user.organization_id).all()
     invoices_sorted = sorted(invoices, key=lambda x: x.created_at or datetime.min, reverse=True)
     return [format_invoice(inv, db) for inv in invoices_sorted]
 
 
 @app.post("/api/invoices/{invoice_id}/approve")
-def approve_invoice(invoice_id: str, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+def approve_invoice(invoice_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.organization_id == current_user.organization_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     invoice.status = "APPROVED"
@@ -604,8 +608,8 @@ def approve_invoice(invoice_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/invoices/{invoice_id}/pay")
-def pay_invoice(invoice_id: str, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+def pay_invoice(invoice_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.organization_id == current_user.organization_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
         
@@ -626,8 +630,8 @@ def pay_invoice(invoice_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/invoices/{invoice_id}/reject")
-def reject_invoice(invoice_id: str, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+def reject_invoice(invoice_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.organization_id == current_user.organization_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     invoice.status = "REJECTED"
@@ -636,8 +640,8 @@ def reject_invoice(invoice_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/invoices/{invoice_id}/resolve-exception")
-def resolve_exception(invoice_id: str, resolution: ExceptionResolution, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+def resolve_exception(invoice_id: str, resolution: ExceptionResolution, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.organization_id == current_user.organization_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
         
@@ -665,13 +669,14 @@ def resolve_exception(invoice_id: str, resolution: ExceptionResolution, db: Sess
 @app.post("/api/invoices/upload")
 async def upload_invoice(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Ingests invoice document, parses it with live OCR/GenAI (or simulator fallback),
     runs the 3-Way Match Verification Engine, and computes capital optimization recommendations.
     """
-    org = db.query(Organization).first()
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization profile not found. Run database seeding.")
 
@@ -766,7 +771,7 @@ async def upload_invoice(
 
     # Lookup or create Vendor
     vendor_name = invoice_data.get("vendor_name", "Unknown Vendor")
-    vendor = db.query(Vendor).filter(Vendor.name == vendor_name).first()
+    vendor = db.query(Vendor).filter(Vendor.name == vendor_name, Vendor.organization_id == org.id).first()
     if not vendor:
         discount_pct = clean_numeric_value(invoice_data.get("early_payment_discount_percentage", 0.00))
         if discount_pct > 1.0:
@@ -850,15 +855,15 @@ async def upload_invoice(
 
 
 @app.get("/api/analytics")
-def get_analytics(db: Session = Depends(get_db)):
-    org = db.query(Organization).first()
+def get_analytics(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
     cost_of_capital = float(org.cost_of_capital)
     cash_balance = float(org.cash_balance)
     
-    invoices = db.query(Invoice).all()
+    invoices = db.query(Invoice).filter(Invoice.organization_id == current_user.organization_id).all()
     
     total_ap = 0.0
     realized_savings = 0.0

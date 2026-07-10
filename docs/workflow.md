@@ -187,7 +187,7 @@ $$DPO = \frac{\text{Average Accounts Payable}}{\text{Cost of Goods Sold (COGS)}}
 
 ### flowchart:
 
-Supplier
+Supplier                    
    │
    ▼
 Sends Invoice
@@ -220,3 +220,59 @@ Optimizer   Handler
              │
              ▼
         Invoice Closed
+
+
+
+ ## overall authentication flow : 
+
+   User Opens Website
+        │
+        ▼
+React Application Starts
+        │
+        ▼
+ClerkProvider Checks Session
+        │
+   ┌────┴────┐
+   │         │
+Logged In   Not Logged In
+   │             │
+   ▼             ▼
+Dashboard     Login Page
+                   │
+                   ▼
+        Continue with Google
+                   │
+                   ▼
+           Google Authentication
+                   │
+                   ▼
+         Clerk Creates JWT Session
+                   │
+                   ▼
+          SSO Callback Completes
+                   │
+                   ▼
+         ProtectedRoute Allows Access
+                   │
+                   ▼
+Dashboard Requests Backend Data
+                   │
+                   ▼
+      JWT Sent in Authorization Header
+                   │
+                   ▼
+       FastAPI Verifies JWT (JWKS)
+                   │
+         ┌─────────┴─────────┐
+         │                   │
+     Invalid             Valid
+         │                   │
+         ▼                   ▼
+401 Unauthorized      Load/Create User
+                             │
+                             ▼
+              Query PostgreSQL Using organization_id
+                             │
+                             ▼
+                  Return Organization Data

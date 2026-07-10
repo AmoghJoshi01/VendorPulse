@@ -301,3 +301,7 @@ Below are the primary core API contracts for system interaction.
 2. **Supplier Portal Authentication**:
    - Clerk handles token exchange using separate organization roles.
    - Suppliers can view only invoices mapped to their corresponding `vendor_id`.
+
+
+
+
