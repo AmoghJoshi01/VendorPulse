@@ -60,6 +60,7 @@ export interface Invoice {
   early_pay_date: string | null;
   exception?: InvoiceException;
   is_live_ai?: boolean;
+  approver_name?: string;
 }
 
 export interface Settings {

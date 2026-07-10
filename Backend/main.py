@@ -35,6 +35,28 @@ from database import (
 )
 from auth import get_current_user
 
+def get_approver_for_amount(amount: float, org_id: str, db: Session) -> User:
+    if amount <= 50000:
+        name = "Level 1"
+    elif amount <= 250000:
+        name = "Level 2"
+    else:
+        name = "Level 3"
+        
+    mgr = db.query(User).filter(
+        User.organization_id == org_id,
+        User.first_name == name,
+        User.last_name == "Manager"
+    ).first()
+    
+    if not mgr:
+        # Fallback to general FINANCE_MANAGER
+        mgr = db.query(User).filter(
+            User.organization_id == org_id,
+            User.role == "FINANCE_MANAGER"
+        ).first()
+    return mgr
+
 # Attempt live GenAI Setup
 from dotenv import load_dotenv
 load_dotenv()
@@ -227,14 +249,11 @@ def execute_3_way_match(db: Session, invoice: Invoice, extracted_items: List[dic
             confidence_score=Decimal("95.00"),
             status="OPEN"
         )
-        # Auto-route to Finance Manager role
-        finance_mgr = db.query(User).filter(
-            User.organization_id == invoice.organization_id,
-            User.role == "FINANCE_MANAGER"
-        ).first()
-        if finance_mgr:
-            exc.predicted_approver_id = finance_mgr.id
-            exc.assigned_approver_id = finance_mgr.id
+        # Auto-route based on gross invoice amount
+        approver = get_approver_for_amount(float(invoice.amount), invoice.organization_id, db)
+        if approver:
+            exc.predicted_approver_id = approver.id
+            exc.assigned_approver_id = approver.id
             
         db.add(exc)
         invoice.status = "EXCEPTION"
@@ -394,16 +413,12 @@ def execute_3_way_match(db: Session, invoice: Invoice, extracted_items: List[dic
                 exc.confidence_score = Decimal("90.00")
                 exc.assigned_approver_id = rule.approver_id
             else:
-                # Fallback to operations lead or finance manager with lower confidence (< 85%)
-                ops_approver = db.query(User).filter(
-                    User.organization_id == invoice.organization_id,
-                    User.role == "APPROVER"
-                ).first()
-                if ops_approver:
-                    exc.predicted_approver_id = ops_approver.id
-                    exc.confidence_score = Decimal("75.00")
-                    # Keep assigned_approver_id NULL for manual triage queue
-                    exc.assigned_approver_id = None
+                # Fallback to amount-based level manager
+                approver = get_approver_for_amount(float(invoice.amount), invoice.organization_id, db)
+                if approver:
+                    exc.predicted_approver_id = approver.id
+                    exc.confidence_score = Decimal("85.00")
+                    exc.assigned_approver_id = approver.id
             db.add(exc)
     else:
         invoice.status = "MATCHED"
@@ -467,6 +482,32 @@ def format_invoice(invoice: Invoice, db: Session) -> Dict[str, Any]:
     elif invoice.ocr_raw_json and isinstance(invoice.ocr_raw_json, dict):
         po_num = invoice.ocr_raw_json.get("purchase_order_number", "N/A")
 
+    # Find approver name
+    approver_name = "N/A"
+    approval = db.query(ApprovalHistory).filter(
+        ApprovalHistory.invoice_id == invoice.id,
+        ApprovalHistory.action == 'APPROVED'
+    ).order_by(ApprovalHistory.created_at.desc()).first()
+    
+    if approval:
+        approver_user = db.query(User).filter(User.id == approval.approver_id).first()
+        if approver_user:
+            approver_name = f"{approver_user.first_name} {approver_user.last_name}"
+        else:
+            approver_name = "Robert Smith"
+    else:
+        exc = next((e for e in invoice.exceptions), None)
+        if exc and exc.assigned_approver_id:
+            approver_user = db.query(User).filter(User.id == exc.assigned_approver_id).first()
+            if approver_user:
+                approver_name = f"{approver_user.first_name} {approver_user.last_name}"
+        elif invoice.status in ["APPROVED", "PAID"]:
+            approver = get_approver_for_amount(float(invoice.amount), invoice.organization_id, db)
+            if approver:
+                approver_name = f"{approver.first_name} {approver.last_name}"
+            else:
+                approver_name = "Robert Smith"
+
     return {
         "id": str(invoice.id),
         "vendor_name": invoice.vendor.name if invoice.vendor else "Unknown Vendor",
@@ -486,13 +527,65 @@ def format_invoice(invoice: Invoice, db: Session) -> Dict[str, Any]:
         "due_date": due_date_str,
         "early_pay_date": early_pay_date,
         "exception": exception_dict,
-        "is_live_ai": bool(invoice.ocr_raw_json.get("is_live_ai", False)) if invoice.ocr_raw_json else False
+        "is_live_ai": bool(invoice.ocr_raw_json.get("is_live_ai", False)) if invoice.ocr_raw_json else False,
+        "approver_name": approver_name
     }
 
 
 # =========================================================================
 # API ROUTES
 # =========================================================================
+
+@app.get("/api/users/me")
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    vendor_name = ""
+    if current_user.vendor_id:
+        v = db.query(Vendor).filter(Vendor.id == current_user.vendor_id).first()
+        if v:
+            vendor_name = v.name
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "role": current_user.role,
+        "vendor_id": str(current_user.vendor_id) if current_user.vendor_id else None,
+        "vendor_name": vendor_name
+    }
+
+class RoleChangeRequest(BaseModel):
+    role: str
+    vendor_id: Optional[str] = None
+
+@app.post("/api/users/change-role")
+def change_role(
+    req: RoleChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    current_user.role = req.role
+    if req.vendor_id:
+        current_user.vendor_id = uuid.UUID(req.vendor_id) if isinstance(req.vendor_id, str) else req.vendor_id
+    else:
+        current_user.vendor_id = None
+    db.commit()
+    db.refresh(current_user)
+    
+    vendor_name = ""
+    if current_user.vendor_id:
+        v = db.query(Vendor).filter(Vendor.id == current_user.vendor_id).first()
+        if v:
+            vendor_name = v.name
+            
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "role": current_user.role,
+        "vendor_id": str(current_user.vendor_id) if current_user.vendor_id else None,
+        "vendor_name": vendor_name
+    }
 
 @app.get("/api/settings")
 def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -566,7 +659,10 @@ def get_vendors(db: Session = Depends(get_db), current_user: User = Depends(get_
 
 @app.get("/api/pos")
 def get_pos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    pos = db.query(PurchaseOrder).filter(PurchaseOrder.organization_id == current_user.organization_id).all()
+    query = db.query(PurchaseOrder).filter(PurchaseOrder.organization_id == current_user.organization_id)
+    if current_user.role == "SUPPLIER_USER" and current_user.vendor_id:
+        query = query.filter(PurchaseOrder.vendor_id == current_user.vendor_id)
+    pos = query.all()
     return [
         {
             "id": str(po.id),
@@ -592,7 +688,10 @@ def get_pos(db: Session = Depends(get_db), current_user: User = Depends(get_curr
 
 @app.get("/api/invoices")
 def get_invoices(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    invoices = db.query(Invoice).filter(Invoice.organization_id == current_user.organization_id).all()
+    query = db.query(Invoice).filter(Invoice.organization_id == current_user.organization_id)
+    if current_user.role == "SUPPLIER_USER" and current_user.vendor_id:
+        query = query.filter(Invoice.vendor_id == current_user.vendor_id)
+    invoices = query.all()
     invoices_sorted = sorted(invoices, key=lambda x: x.created_at or datetime.min, reverse=True)
     return [format_invoice(inv, db) for inv in invoices_sorted]
 
@@ -603,6 +702,15 @@ def approve_invoice(invoice_id: str, db: Session = Depends(get_db), current_user
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     invoice.status = "APPROVED"
+    
+    # Record in approval history
+    approval = ApprovalHistory(
+        invoice_id=invoice.id,
+        approver_id=current_user.id,
+        action="APPROVED",
+        comments="Approved by Business Manager"
+    )
+    db.add(approval)
     db.commit()
     return format_invoice(invoice, db)
 
@@ -770,25 +878,28 @@ async def upload_invoice(
     invoice_data["is_live_ai"] = use_live_ai
 
     # Lookup or create Vendor
-    vendor_name = invoice_data.get("vendor_name", "Unknown Vendor")
-    vendor = db.query(Vendor).filter(Vendor.name == vendor_name, Vendor.organization_id == org.id).first()
-    if not vendor:
-        discount_pct = clean_numeric_value(invoice_data.get("early_payment_discount_percentage", 0.00))
-        if discount_pct > 1.0:
-            discount_pct = discount_pct / 100.0
-            
-        vendor = Vendor(
-            organization_id=org.id,
-            name=vendor_name,
-            email=f"billing@{vendor_name.lower().replace(' ', '')}.com",
-            payment_terms=invoice_data.get("payment_terms", "Net 30"),
-            default_discount_pct=Decimal(str(discount_pct)),
-            discount_days=int(clean_numeric_value(invoice_data.get("discount_period_days", 0))),
-            net_days=int(clean_numeric_value(invoice_data.get("net_period_days", 30))),
-            status="ACTIVE"
-        )
-        db.add(vendor)
-        db.flush()
+    if current_user.role == "SUPPLIER_USER" and current_user.vendor_id:
+        vendor = db.query(Vendor).filter(Vendor.id == current_user.vendor_id).first()
+    else:
+        vendor_name = invoice_data.get("vendor_name", "Unknown Vendor")
+        vendor = db.query(Vendor).filter(Vendor.name == vendor_name, Vendor.organization_id == org.id).first()
+        if not vendor:
+            discount_pct = clean_numeric_value(invoice_data.get("early_payment_discount_percentage", 0.00))
+            if discount_pct > 1.0:
+                discount_pct = discount_pct / 100.0
+                
+            vendor = Vendor(
+                organization_id=org.id,
+                name=vendor_name,
+                email=f"billing@{vendor_name.lower().replace(' ', '')}.com",
+                payment_terms=invoice_data.get("payment_terms", "Net 30"),
+                default_discount_pct=Decimal(str(discount_pct)),
+                discount_days=int(clean_numeric_value(invoice_data.get("discount_period_days", 0))),
+                net_days=int(clean_numeric_value(invoice_data.get("net_period_days", 30))),
+                status="ACTIVE"
+            )
+            db.add(vendor)
+            db.flush()
 
     # Create Invoice ORM Model
     issue_date = date.today()
@@ -845,6 +956,202 @@ async def upload_invoice(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invoice number '{invoice.invoice_number}' already exists in the system for supplier '{vendor_name}'."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process invoice matching: {str(e)}"
+        )
+
+    return format_invoice(invoice, db)
+
+
+@app.post("/api/invoices/email-simulate")
+async def email_simulate_invoice(
+    sender_email: str = Form(...),
+    subject: str = Form(...),
+    body: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Simulates receiving an email from a vendor, checks the subject/body for invoice keywords,
+    and runs the AI/OCR ingestion pipeline if the check passes.
+    """
+    # 1. Natural Language Keywords Check
+    invoice_keywords = ["invoice", "bill", "receipt", "payment", "attached", "invoice.pdf", "statement", "fee", "cost", "charge"]
+    text_to_check = (subject + " " + body).lower()
+    
+    keyword_found = any(kw in text_to_check for kw in invoice_keywords)
+    if not keyword_found:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ingestion Ignored: The email subject or body does not contain invoice-related language (e.g., 'invoice', 'bill', 'payment', 'attached')."
+        )
+        
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization profile not found.")
+        
+    file_bytes = await file.read()
+    file_name = file.filename.lower()
+    
+    # Try to find a matches in name to return appropriate mock flow
+    mock_key = None
+    if "acme" in file_name:
+        mock_key = "acme"
+    elif "globex" in file_name:
+        mock_key = "globex"
+    elif "initech" in file_name:
+        mock_key = "initech"
+    elif "olivia" in file_name:
+        mock_key = "olivia"
+        
+    invoice_data = {}
+    if mock_key:
+        invoice_data = MOCK_INVOICE_DATA_SUITE[mock_key].copy()
+    else:
+        invoice_data = {
+            "vendor_name": "Unknown Vendor",
+            "invoice_number": f"INV-{uuid.uuid4().hex[:6].upper()}",
+            "invoice_amount": 0.0,
+            "purchase_order_number": "N/A",
+            "payment_terms": "Net 30",
+            "early_payment_discount_percentage": 0.0,
+            "discount_period_days": 0,
+            "net_period_days": 30,
+            "line_items": []
+        }
+
+    use_live_ai = False
+    
+    # Check if Google Document AI is configured
+    gcp_project = os.environ.get("GCP_PROJECT_ID")
+    docai_processor = os.environ.get("DOCUMENT_AI_PROCESSOR_ID")
+    
+    mime = "application/pdf"
+    if file_name.endswith(".png"):
+        mime = "image/png"
+    elif file_name.endswith(".jpg") or file_name.endswith(".jpeg"):
+        mime = "image/jpeg"
+        
+    if not mock_key and gcp_project and docai_processor:
+        try:
+            extractor = DocumentAIExtractor()
+            parsed = extractor.process_document_bytes(file_bytes, mime)
+            for key in ["vendor_name", "invoice_number", "invoice_amount", "purchase_order_number", "payment_terms"]:
+                if key in parsed:
+                    invoice_data[key] = parsed[key]
+            for key in ["early_payment_discount_percentage", "discount_period_days", "net_period_days"]:
+                if key in parsed:
+                    val = parsed[key]
+                    if val is None or val == "" or val == "None" or val == "N/A":
+                        invoice_data[key] = 0.0 if key == "early_payment_discount_percentage" else 0
+                    else:
+                        invoice_data[key] = float(val) if key == "early_payment_discount_percentage" else int(float(val))
+            if "line_items" in parsed:
+                invoice_data["line_items"] = parsed["line_items"]
+            use_live_ai = True
+        except Exception as e:
+            print(f"[DocumentAI] Live extraction failed: {e}")
+            use_live_ai = False
+            
+    # Fallback to Gemini API
+    if not mock_key and not use_live_ai:
+        if API_KEY and len(API_KEY) > 5:
+            try:
+                parsed = parse_invoice_with_gemini(file_bytes, mime)
+                for key in ["vendor_name", "invoice_number", "invoice_amount", "purchase_order_number", "payment_terms"]:
+                    if key in parsed:
+                        invoice_data[key] = parsed[key]
+                for key in ["early_payment_discount_percentage", "discount_period_days", "net_period_days"]:
+                    if key in parsed:
+                        val = parsed[key]
+                        if val is None or val == "" or val == "None" or val == "N/A":
+                            invoice_data[key] = 0.0 if key == "early_payment_discount_percentage" else 0
+                        else:
+                            invoice_data[key] = float(val) if key == "early_payment_discount_percentage" else int(float(val))
+                if "line_items" in parsed:
+                    invoice_data["line_items"] = parsed["line_items"]
+                use_live_ai = True
+            except Exception as e:
+                print(f"[Gemini fallback] Live extraction failed: {e}")
+                use_live_ai = False
+
+    invoice_data["is_live_ai"] = use_live_ai
+
+    # Lookup Vendor by sender_email or vendor name
+    vendor = db.query(Vendor).filter(Vendor.email == sender_email, Vendor.organization_id == org.id).first()
+    if not vendor:
+        # Fallback to parsed vendor name
+        vendor_name = invoice_data.get("vendor_name", "Unknown Vendor")
+        vendor = db.query(Vendor).filter(Vendor.name == vendor_name, Vendor.organization_id == org.id).first()
+        if not vendor:
+            discount_pct = clean_numeric_value(invoice_data.get("early_payment_discount_percentage", 0.00))
+            if discount_pct > 1.0:
+                discount_pct = discount_pct / 100.0
+            vendor = Vendor(
+                organization_id=org.id,
+                name=vendor_name,
+                email=sender_email if sender_email else f"billing@{vendor_name.lower().replace(' ', '')}.com",
+                payment_terms=invoice_data.get("payment_terms", "Net 30"),
+                default_discount_pct=Decimal(str(discount_pct)),
+                discount_days=int(clean_numeric_value(invoice_data.get("discount_period_days", 0))),
+                net_days=int(clean_numeric_value(invoice_data.get("net_period_days", 30))),
+                status="ACTIVE"
+            )
+            db.add(vendor)
+            db.flush()
+
+    issue_date = date.today()
+    net_days = int(clean_numeric_value(invoice_data.get("net_period_days", 30)))
+    due_date = issue_date + timedelta(days=net_days)
+    invoice_amount = clean_numeric_value(invoice_data.get("invoice_amount", 0.00))
+
+    invoice = Invoice(
+        organization_id=org.id,
+        vendor_id=vendor.id,
+        invoice_number=invoice_data.get("invoice_number", f"INV-{uuid.uuid4().hex[:6].upper()}"),
+        amount=Decimal(str(invoice_amount)),
+        tax_amount=Decimal("0.00"),
+        issue_date=issue_date,
+        due_date=due_date,
+        payment_terms=invoice_data.get("payment_terms", "Net 30"),
+        file_url=f"s3://vendorpulse-invoices/{file.filename}",
+        ocr_raw_json=invoice_data,
+        status="PENDING_MATCH",
+        early_payment_status="CALCULATED"
+    )
+    
+    invoice.purchase_order_number = invoice_data.get("purchase_order_number")
+    
+    try:
+        db.add(invoice)
+        db.flush()
+        execute_3_way_match(db, invoice, invoice_data.get("line_items", []))
+        
+        d = float(invoice.vendor.default_discount_pct)
+        t_early = float(invoice.vendor.discount_days)
+        t_net = float(invoice.vendor.net_days)
+        days_saved = t_net - t_early
+
+        if days_saved > 0 and d > 0:
+            implied_annual_yield = (d / (1.0 - d)) * (365.0 / days_saved)
+            if implied_annual_yield * 100.0 > float(org.cost_of_capital):
+                invoice.early_payment_status = "OPTIMAL_PAID_EARLY"
+            else:
+                invoice.early_payment_status = "OPTIMAL_PAID_NET"
+        else:
+            invoice.early_payment_status = "OPTIMAL_PAID_NET"
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        from sqlalchemy.exc import IntegrityError
+        if isinstance(e, IntegrityError) or "UNIQUE constraint" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invoice number '{invoice.invoice_number}' already exists in the system for supplier '{vendor.name}'."
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -916,6 +1223,68 @@ def get_analytics(db: Session = Depends(get_db), current_user: User = Depends(ge
             "net_payment_schedule": [round(val, 2) for val in week_needs_net]
         }
     }
+
+
+# =========================================================================
+# ADMINISTRATOR ENDPOINTS
+# =========================================================================
+
+class ApproveUserRequest(BaseModel):
+    role: str  # 'FINANCE_MANAGER' or 'SUPPLIER_USER'
+    vendor_id: Optional[str] = None
+
+@app.get("/api/users/pending")
+def get_pending_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != "ADMINISTRATOR":
+        raise HTTPException(status_code=403, detail="Only administrators can view pending users.")
+    users = db.query(User).filter(User.status == "PENDING").all()
+    return [
+        {
+            "id": str(u.id),
+            "email": u.email,
+            "first_name": u.first_name or "New",
+            "last_name": u.last_name or "Signup",
+            "created_at": u.created_at.isoformat() if u.created_at else None
+        }
+        for u in users
+    ]
+
+@app.post("/api/users/{user_id}/approve")
+def approve_user(
+    user_id: str, 
+    payload: ApproveUserRequest, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "ADMINISTRATOR":
+        raise HTTPException(status_code=403, detail="Only administrators can approve users.")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    user.role = payload.role
+    user.status = "APPROVED"
+    if payload.role == "SUPPLIER_USER" and payload.vendor_id:
+        user.vendor_id = uuid.UUID(payload.vendor_id) if isinstance(payload.vendor_id, str) else payload.vendor_id
+        
+    db.commit()
+    db.refresh(user)
+    return {"status": "success", "message": f"User approved as {payload.role}"}
+
+@app.post("/api/users/{user_id}/reject")
+def reject_user(
+    user_id: str, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "ADMINISTRATOR":
+        raise HTTPException(status_code=403, detail="Only administrators can reject users.")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.status = "REJECTED"
+    db.commit()
+    return {"status": "success", "message": "User registration request rejected."}
 
 
 if __name__ == "__main__":

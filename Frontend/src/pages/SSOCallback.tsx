@@ -9,7 +9,12 @@ export default function SSOCallback() {
       </div>
       <h2 className="mt-6 text-xl font-medium tracking-wide text-slate-300">Completing Sign-In...</h2>
       <p className="mt-2 text-sm text-slate-500 animate-pulse">Syncing session with Clerk</p>
-      <AuthenticateWithRedirectCallback signInForceRedirectUrl="/dashboard" />
+      <AuthenticateWithRedirectCallback 
+        signInForceRedirectUrl="/dashboard" 
+        signUpForceRedirectUrl="/dashboard"
+        afterSignInUrl="/dashboard"
+        afterSignUpUrl="/dashboard"
+      />
     </div>
   );
 }

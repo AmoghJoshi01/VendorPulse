@@ -109,10 +109,13 @@ class User(Base):
     first_name = Column(String(100))
     last_name = Column(String(100))
     role = Column(String(50), nullable=False)  # 'ADMIN', 'FINANCE_MANAGER', 'APPROVER', 'SUPPLIER_USER'
+    vendor_id = Column(get_uuid_type(), ForeignKey("vendors.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(50), default="APPROVED")  # 'PENDING', 'APPROVED', 'REJECTED'
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Relationships
     organization = relationship("Organization", back_populates="users")
+    vendor = relationship("Vendor")
 
 
 class Vendor(Base):
@@ -375,7 +378,31 @@ def init_db(seed: bool = True):
                 last_name="Smith",
                 role="APPROVER"
             )
-            db.add_all([finance_mgr, approver])
+            level1_mgr = User(
+                clerk_user_id="user_level1_mgr",
+                organization_id=org.id,
+                email="level1@abcenterprises.com",
+                first_name="Level 1",
+                last_name="Manager",
+                role="FINANCE_MANAGER"
+            )
+            level2_mgr = User(
+                clerk_user_id="user_level2_mgr",
+                organization_id=org.id,
+                email="level2@abcenterprises.com",
+                first_name="Level 2",
+                last_name="Manager",
+                role="FINANCE_MANAGER"
+            )
+            level3_mgr = User(
+                clerk_user_id="user_level3_mgr",
+                organization_id=org.id,
+                email="level3@abcenterprises.com",
+                first_name="Level 3",
+                last_name="Manager",
+                role="FINANCE_MANAGER"
+            )
+            db.add_all([finance_mgr, approver, level1_mgr, level2_mgr, level3_mgr])
             db.flush()
             
             # 3. Create Vendors
@@ -432,6 +459,28 @@ def init_db(seed: bool = True):
                 status="ACTIVE"
             )
             db.add_all([v_acme, v_globex, v_initech, v_olivia])
+            db.flush()
+
+            # 3b. Create Supplier Users for testing
+            supplier_acme = User(
+                clerk_user_id="user_supplier_acme",
+                organization_id=org.id,
+                email="ap@acmeindustrial.com",
+                first_name="Alice",
+                last_name="Acme",
+                role="SUPPLIER_USER",
+                vendor_id=v_acme.id
+            )
+            supplier_olivia = User(
+                clerk_user_id="user_supplier_olivia",
+                organization_id=org.id,
+                email="olivia@wilsonconsulting.co",
+                first_name="Olivia",
+                last_name="Wilson",
+                role="SUPPLIER_USER",
+                vendor_id=v_olivia.id
+            )
+            db.add_all([supplier_acme, supplier_olivia])
             db.flush()
 
             # 4. Create Purchase Orders & Items

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { UserButton, OrganizationSwitcher, useAuth } from "@clerk/clerk-react";
+import React, { useState, useEffect } from 'react';
+import { UserButton, OrganizationSwitcher, useAuth, useUser } from "@clerk/clerk-react";
 import { 
   DollarSign, 
   Upload, 
@@ -17,7 +17,8 @@ import {
   ChevronRight, 
   Info,
   Calendar,
-  AlertCircle
+  AlertCircle,
+  UserCheck
 } from 'lucide-react';
 import { Invoice, Vendor, PurchaseOrder, Analytics, Settings } from '../types';
 
@@ -25,20 +26,25 @@ const API_BASE = 'http://127.0.0.1:8000/api';
 
 export default function Dashboard() {
   const { getToken } = useAuth();
+  const { user: clerkUser } = useUser();
 
   const authFetch = async (url: string, options: RequestInit = {}) => {
     const token = await getToken();
     const headers = {
       ...(options.headers || {}),
-      'Authorization': `Bearer ${token}`
+      'Authorization': `Bearer ${token}`,
+      'x-user-email': clerkUser?.primaryEmailAddress?.emailAddress || '',
+      'x-user-firstname': clerkUser?.firstName || '',
+      'x-user-lastname': clerkUser?.lastName || ''
     };
     return fetch(url, { ...options, headers });
   };
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'invoices' | 'matching' | 'settings' | 'portal'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'invoices' | 'matching' | 'settings' | 'portal' | 'payroll_vendors' | 'user_approvals'>('dashboard');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [pendingUsers, setPendingUsers] = useState<any[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [settings, setSettings] = useState<Settings>({ cost_of_capital: 6.0, minimum_liquidity_threshold: 25000.0, cash_balance: 150000.0 });
   const [loading, setLoading] = useState<boolean>(true);
@@ -64,13 +70,57 @@ export default function Dashboard() {
   // Supplier portal state
   const [portalSelectedInvoice, setPortalSelectedInvoice] = useState<Invoice | null>(null);
 
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+    role: string;
+    vendor_id: string | null;
+    vendor_name: string;
+    status: string;
+  } | null>(null);
+
+  // Email simulation states
+  const [emailSender, setEmailSender] = useState<string>('');
+  const [emailSubject, setEmailSubject] = useState<string>('');
+  const [emailBody, setEmailBody] = useState<string>('');
+  const [emailAttachment, setEmailAttachment] = useState<File | null>(null);
+  const [emailUploading, setEmailUploading] = useState<boolean>(false);
+  const [emailSuccessMessage, setEmailSuccessMessage] = useState<string | null>(null);
+  const [emailErrorMessage, setEmailErrorMessage] = useState<string | null>(null);
+
   useEffect(() => {
     fetchData();
   }, []);
 
+  const fetchPendingUsers = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/users/pending`);
+      if (res.ok) {
+        setPendingUsers(await res.json());
+      }
+    } catch (err) {
+      console.error('Error fetching pending users:', err);
+    }
+  };
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // 1. Fetch user context
+      const meRes = await authFetch(`${API_BASE}/users/me`);
+      const meData = await meRes.json();
+      setCurrentUser(meData);
+      setEmailSender(meData.email);
+
+      // Short circuit if user is pending approval
+      if (meData.status === 'PENDING' || meData.role === 'PENDING_APPROVAL') {
+        setLoading(false);
+        return;
+      }
+
+      // 2. Fetch everything else
       const [settingsRes, invoicesRes, posRes, vendorsRes, analyticsRes] = await Promise.all([
         authFetch(`${API_BASE}/settings`),
         authFetch(`${API_BASE}/invoices`),
@@ -90,10 +140,101 @@ export default function Dashboard() {
       setPos(posData);
       setVendors(vendorsData);
       setAnalytics(analyticsData);
+
+      // If administrator, fetch pending users list
+      if (meData.role === 'ADMINISTRATOR') {
+        await fetchPendingUsers();
+      }
+
+      // If this is the initial load and they are a vendor, force them into portal view
+      if (!currentUser && meData.role === 'SUPPLIER_USER') {
+        setActiveTab('portal');
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const switchDemoRole = async (role: string, vendorId: string | null) => {
+    setLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE}/users/change-role`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, vendor_id: vendorId })
+      });
+      const data = await res.json();
+      setCurrentUser(data);
+      setEmailSender(data.email);
+      
+      // Update local storage or redirect tabs based on role
+      if (data.role === 'SUPPLIER_USER') {
+        setActiveTab('portal');
+      } else {
+        setActiveTab('dashboard');
+      }
+      
+      // Re-fetch invoices, POs, and analytics under new role's context
+      const [invoicesRes, posRes, analyticsRes] = await Promise.all([
+        authFetch(`${API_BASE}/invoices`),
+        authFetch(`${API_BASE}/pos`),
+        authFetch(`${API_BASE}/analytics`)
+      ]);
+      setInvoices(await invoicesRes.json());
+      setPos(await posRes.json());
+      setAnalytics(await analyticsRes.json());
+    } catch (err) {
+      console.error('Error switching demo role:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEmailSimulateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailSender || !emailSubject || !emailBody || !emailAttachment) {
+      setEmailErrorMessage("Please fill in all simulated email fields and attach a file.");
+      return;
+    }
+    
+    setEmailUploading(true);
+    setEmailSuccessMessage(null);
+    setEmailErrorMessage(null);
+    
+    try {
+      const formData = new FormData();
+      formData.append('sender_email', emailSender);
+      formData.append('subject', emailSubject);
+      formData.append('body', emailBody);
+      formData.append('file', emailAttachment);
+      
+      const res = await authFetch(`${API_BASE}/invoices/email-simulate`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setEmailSuccessMessage(`Simulated email ingested! Created invoice ${data.invoice_number} under supplier "${data.vendor_name}".`);
+        setEmailSubject('');
+        setEmailBody('');
+        setEmailAttachment(null);
+        
+        const fileInput = document.getElementById('email_file_input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        
+        await fetchData();
+      } else {
+        const errData = await res.json();
+        setEmailErrorMessage(errData.detail || "Failed to ingest simulated email.");
+      }
+    } catch (err: any) {
+      console.error('Error in email simulation:', err);
+      setEmailErrorMessage(err.message || "An unexpected error occurred.");
+    } finally {
+      setEmailUploading(false);
     }
   };
 
@@ -296,8 +437,65 @@ export default function Dashboard() {
     );
   }
 
+  if (currentUser?.status === 'PENDING' || currentUser?.role === 'PENDING_APPROVAL') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center text-slate-100 font-sans p-6 text-center">
+        <div className="w-16 h-16 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-full flex items-center justify-center mb-6">
+          <AlertCircle className="w-8 h-8 animate-pulse" />
+        </div>
+        <h2 className="text-2xl font-bold tracking-tight text-white">Registration Pending Approval</h2>
+        <p className="mt-2 text-sm text-slate-400 max-w-md leading-relaxed">
+          Your account under <span className="font-semibold text-amber-300">{currentUser.email}</span> is awaiting review by the default Administrator (joshiamogh1234@gmail.com).
+        </p>
+        <p className="mt-2 text-xs text-slate-500 max-w-sm">
+          Once approved as either a Business Manager or Vendor, you will receive corresponding access to the app.
+        </p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-6 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 px-5 py-2.5 rounded-lg text-xs font-semibold transition-all shadow-lg"
+        >
+          Check Approval Status
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-200 font-sans flex flex-col antialiased selection:bg-emerald-500/30 selection:text-emerald-300">
+      {/* Demo Identity Switcher */}
+      <div className="bg-[#0c0f1d] border-b border-indigo-500/25 px-6 py-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-indigo-300 z-50">
+        <div className="flex items-center gap-2">
+          <span className="font-bold uppercase tracking-wider text-[9px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded">DEMO ENVIRONMENT</span>
+          <span>Switch profiles to test role-based dashboards and permissions:</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button 
+            onClick={() => switchDemoRole('FINANCE_MANAGER', null)}
+            className={`px-3 py-1 rounded-lg font-semibold transition-all border text-[11px] ${
+              currentUser?.role !== 'SUPPLIER_USER'
+                ? 'bg-indigo-600 border-indigo-500 text-white shadow-md'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            ABC Enterprises (Business Manager)
+          </button>
+          
+          {vendors.map(v => (
+            <button
+              key={v.id}
+              onClick={() => switchDemoRole('SUPPLIER_USER', v.id)}
+              className={`px-3 py-1 rounded-lg font-semibold transition-all border text-[11px] ${
+                currentUser?.role === 'SUPPLIER_USER' && currentUser?.vendor_id === v.id
+                  ? 'bg-emerald-600 border-emerald-500 text-white shadow-md'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {v.name.split(' ')[0]} (Vendor)
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Top Banner */}
       <header className="border-b border-slate-800 bg-[#0f1524]/80 backdrop-blur-md sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -367,109 +565,164 @@ export default function Dashboard() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-slate-800 bg-[#0c111e]/90 p-4 flex flex-col justify-between">
           <div className="space-y-6">
-            <div>
-              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Core Modules</p>
-              <nav className="space-y-1">
-                <button 
-                  onClick={() => setActiveTab('dashboard')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'dashboard' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <TrendingUp className="w-4.5 h-4.5" />
-                  <span>Treasury Analytics</span>
-                </button>
+            {currentUser?.role !== 'SUPPLIER_USER' ? (
+              <>
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Core Modules</p>
+                  <nav className="space-y-1">
+                    <button 
+                      onClick={() => setActiveTab('dashboard')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'dashboard' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <TrendingUp className="w-4.5 h-4.5" />
+                      <span>Treasury Analytics</span>
+                    </button>
 
-                <button 
-                  onClick={() => setActiveTab('upload')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'upload' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <Upload className="w-4.5 h-4.5" />
-                  <span>Document Ingestion</span>
-                </button>
+                    <button 
+                      onClick={() => setActiveTab('upload')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'upload' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Upload className="w-4.5 h-4.5" />
+                      <span>Document Ingestion</span>
+                    </button>
 
-                <button 
-                  onClick={() => setActiveTab('invoices')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'invoices' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <FileText className="w-4.5 h-4.5" />
-                  <span className="flex-1 text-left">Invoice Ledger</span>
-                  {invoices.filter(i => i.status === 'PENDING_MATCH' || i.status === 'EXCEPTION').length > 0 && (
-                    <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs px-2 py-0.5 rounded-full font-bold">
-                      {invoices.filter(i => i.status === 'PENDING_MATCH' || i.status === 'EXCEPTION').length}
-                    </span>
-                  )}
-                </button>
+                    <button 
+                      onClick={() => setActiveTab('invoices')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'invoices' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <FileText className="w-4.5 h-4.5" />
+                      <span className="flex-1 text-left">Invoice Ledger</span>
+                      {invoices.filter(i => i.status === 'PENDING_MATCH' || i.status === 'EXCEPTION').length > 0 && (
+                        <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs px-2 py-0.5 rounded-full font-bold">
+                          {invoices.filter(i => i.status === 'PENDING_MATCH' || i.status === 'EXCEPTION').length}
+                        </span>
+                      )}
+                    </button>
 
-                <button 
-                  onClick={() => {
-                    // Set default selected invoice if none selected yet
-                    if (!selectedInvoice && invoices.length > 0) {
-                      setSelectedInvoice(invoices[0]);
-                    }
-                    setActiveTab('matching');
-                  }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'matching' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <AlertTriangle className="w-4.5 h-4.5" />
-                  <span className="flex-1 text-left">3-Way Match & QA</span>
-                  {invoices.filter(i => i.status === 'EXCEPTION').length > 0 && (
-                    <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs px-2 py-0.5 rounded-full font-bold">
-                      {invoices.filter(i => i.status === 'EXCEPTION').length}
-                    </span>
-                  )}
-                </button>
-              </nav>
-            </div>
+                    <button 
+                      onClick={() => {
+                        if (!selectedInvoice && invoices.length > 0) {
+                          setSelectedInvoice(invoices[0]);
+                        }
+                        setActiveTab('matching');
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'matching' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <AlertTriangle className="w-4.5 h-4.5" />
+                      <span className="flex-1 text-left">3-Way Match & QA</span>
+                      {invoices.filter(i => i.status === 'EXCEPTION').length > 0 && (
+                        <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs px-2 py-0.5 rounded-full font-bold">
+                          {invoices.filter(i => i.status === 'EXCEPTION').length}
+                        </span>
+                      )}
+                    </button>
 
-            <div>
-              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Portals & Settings</p>
-              <nav className="space-y-1">
-                <button 
-                  onClick={() => {
-                    // Set default for portal view
-                    if (invoices.length > 0) {
-                      setPortalSelectedInvoice(invoices[0]);
-                    }
-                    setActiveTab('portal');
-                  }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'portal' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <Building className="w-4.5 h-4.5" />
-                  <span>Supplier Portal</span>
-                </button>
+                    <button 
+                      onClick={() => setActiveTab('payroll_vendors')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'payroll_vendors' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Users className="w-4.5 h-4.5" />
+                      <span>Payroll Vendors</span>
+                    </button>
 
-                <button 
-                  onClick={() => setActiveTab('settings')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === 'settings' 
-                      ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
-                      : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
-                  }`}
-                >
-                  <SettingsIcon className="w-4.5 h-4.5" />
-                  <span>Treasury Settings</span>
-                </button>
-              </nav>
-            </div>
+                    {currentUser?.role === 'ADMINISTRATOR' && (
+                      <button 
+                        onClick={() => setActiveTab('user_approvals')}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                          activeTab === 'user_approvals' 
+                            ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                            : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                        }`}
+                      >
+                        <UserCheck className="w-4.5 h-4.5" />
+                        <span className="flex-1 text-left">User Approvals</span>
+                        {pendingUsers.length > 0 && (
+                          <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs px-2 py-0.5 rounded-full font-bold animate-pulse">
+                            {pendingUsers.length}
+                          </span>
+                        )}
+                      </button>
+                    )}
+                  </nav>
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Portals & Settings</p>
+                  <nav className="space-y-1">
+                    <button 
+                      onClick={() => {
+                        if (invoices.length > 0) {
+                          setPortalSelectedInvoice(invoices[0]);
+                        }
+                        setActiveTab('portal');
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'portal' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Building className="w-4.5 h-4.5" />
+                      <span>Supplier Portal</span>
+                    </button>
+
+                    <button 
+                      onClick={() => setActiveTab('settings')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === 'settings' 
+                          ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                          : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <SettingsIcon className="w-4.5 h-4.5" />
+                      <span>Treasury Settings</span>
+                    </button>
+                  </nav>
+                </div>
+              </>
+            ) : (
+              <div>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-3">Supplier Portal</p>
+                <nav className="space-y-1">
+                  <button 
+                    onClick={() => {
+                      if (invoices.length > 0) {
+                        setPortalSelectedInvoice(invoices[0]);
+                      }
+                      setActiveTab('portal');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                      activeTab === 'portal' 
+                        ? 'bg-gradient-to-r from-emerald-500/10 to-teal-500/5 text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/5' 
+                        : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 border border-transparent'
+                    }`}
+                  >
+                    <Building className="w-4.5 h-4.5" />
+                    <span>Self-Service Portal</span>
+                  </button>
+                </nav>
+              </div>
+            )}
           </div>
 
           {/* Quick Upload Simulator */}
@@ -1448,114 +1701,509 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* TAB 5: SUPPLIER PORTAL */}
-          {activeTab === 'portal' && (
+          {/* TAB: PAYROLL VENDORS (Business Manager Only) */}
+          {activeTab === 'payroll_vendors' && (
             <div className="space-y-8 animate-fade-in">
-              <div className="border border-indigo-500/20 bg-indigo-500/5 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Building className="w-5 h-5 text-indigo-400" /> Supplier Self-Service Portal
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Demo view of what suppliers see. Vendors log in to track invoices, adjust bank accounts, or request discount acceleration.
-                  </p>
-                </div>
-                <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full text-xs font-semibold">
-                  Mock Identity: Olivia Wilson Consulting
-                </span>
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Users className="w-5 h-5 text-emerald-400" /> Payroll Vendors Directory
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Directory of vendors approved on corporate payroll with corresponding payment terms, ledger statistics, and deposit credentials.
+                </p>
               </div>
 
-              {/* Supplier Portal Layout */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                {/* Invoice list for Supplier */}
-                <div className="lg:col-span-7 bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-6">
-                  <h3 className="text-sm font-bold text-slate-300">Olivia Wilson Billing Ledgers</h3>
-                  <div className="space-y-3">
-                    {invoices.filter(i => i.vendor_name.includes('Olivia Wilson') || i.vendor_name.includes('Acme')).map((inv) => (
-                      <div key={inv.id} className="bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 flex justify-between items-center hover:border-indigo-500/20 transition-all">
+              <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 font-bold uppercase text-[10px] tracking-wider">
+                        <th className="pb-3 pl-2">Vendor Name</th>
+                        <th className="pb-3">Contact Email</th>
+                        <th className="pb-3">Payment Terms</th>
+                        <th className="pb-3">Bank Details</th>
+                        <th className="pb-3 text-center">Ledger Invoices</th>
+                        <th className="pb-3">Total Billed</th>
+                        <th className="pb-3 pr-2 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {vendors.map((v) => {
+                        const vendorInvoices = invoices.filter(i => i.vendor_name === v.name);
+                        const totalBilled = vendorInvoices.reduce((sum, i) => sum + i.invoice_amount, 0);
+                        return (
+                          <tr key={v.id} className="hover:bg-slate-900/30 text-slate-300 transition-colors">
+                            <td className="py-4 pl-2 font-semibold text-white">{v.name}</td>
+                            <td className="py-4">{v.email}</td>
+                            <td className="py-4">
+                              <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded text-slate-400 font-medium">
+                                {v.payment_terms}
+                              </span>
+                            </td>
+                            <td className="py-4 font-mono text-slate-400">
+                              {v.bank_name ? `${v.bank_name} (Acc: ****${v.bank_account_number ? v.bank_account_number.slice(-4) : 'N/A'})` : 'No credentials configured'}
+                            </td>
+                            <td className="py-4 font-semibold text-center">{vendorInvoices.length}</td>
+                            <td className="py-4 font-bold text-emerald-400">{formatCurrency(totalBilled)}</td>
+                            <td className="py-4 pr-2 text-right">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                v.status === 'ACTIVE'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              }`}>
+                                {v.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: SUPPLIER PORTAL */}
+          {activeTab === 'portal' && (() => {
+            const currentVendorName = currentUser?.role === 'SUPPLIER_USER' ? currentUser.vendor_name : 'Olivia Wilson Consulting';
+            const activeVendorObj = vendors.find(v => v.name === currentVendorName);
+            
+            const vendorInvoices = invoices.filter(i => i.vendor_name === currentVendorName);
+            
+            return (
+              <div className="space-y-8 animate-fade-in">
+                <div className="border border-indigo-500/20 bg-indigo-500/5 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                      <Building className="w-5 h-5 text-indigo-400" /> Supplier Self-Service Portal
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Portal for suppliers to upload invoices, simulate email submissions, view deposit routing credentials, and monitor payment processing.
+                    </p>
+                  </div>
+                  <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-full text-xs font-semibold">
+                    Identity: {currentVendorName}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                  {/* Left Column: Invoice List & Status Tracker */}
+                  <div className="lg:col-span-7 space-y-6">
+                    <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-4">
+                      <h3 className="text-sm font-bold text-slate-300">Billing Ledgers ({vendorInvoices.length} Invoices)</h3>
+                      
+                      {vendorInvoices.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500 text-xs">
+                          No invoices found for this vendor. Use the portal below to upload or email one.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {vendorInvoices.map((inv) => (
+                            <div 
+                              key={inv.id} 
+                              onClick={() => setPortalSelectedInvoice(inv)}
+                              className={`bg-slate-950/40 border rounded-xl p-4 flex justify-between items-center cursor-pointer transition-all hover:border-indigo-500/30 ${
+                                portalSelectedInvoice?.id === inv.id 
+                                  ? 'border-indigo-500/50 bg-indigo-950/10' 
+                                  : 'border-slate-800/80'
+                              }`}
+                            >
+                              <div>
+                                <p className="font-semibold text-sm text-white">{inv.invoice_number}</p>
+                                <div className="flex gap-4 text-xs text-slate-500 mt-1">
+                                  <span>Billed: {formatCurrency(inv.invoice_amount)}</span>
+                                  <span>Due Date: {formatDate(inv.due_date)}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3">
+                                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                                  inv.status === 'PAID'
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                    : inv.status === 'APPROVED'
+                                    ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                    : inv.status === 'EXCEPTION'
+                                    ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                }`}>
+                                  {inv.status}
+                                </span>
+                                
+                                {inv.status !== 'PAID' && inv.early_payment_discount_percentage > 0 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPortalSelectedInvoice(inv);
+                                    }}
+                                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-2.5 py-1 rounded font-bold transition-all"
+                                  >
+                                    Early Pay
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Invoice Status Tracker (Timeline) */}
+                    {portalSelectedInvoice && (
+                      <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-6">
                         <div>
-                          <p className="font-semibold text-sm text-white">{inv.invoice_number}</p>
-                          <div className="flex gap-4 text-xs text-slate-500 mt-1">
-                            <span>Billed: {formatCurrency(inv.invoice_amount)}</span>
-                            <span>Due Date: {formatDate(inv.due_date)}</span>
+                          <h3 className="text-sm font-bold text-slate-300">
+                            Invoice Status Tracker: <span className="text-indigo-400">{portalSelectedInvoice.invoice_number}</span>
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-0.5">Live milestone tracking for payment settlement.</p>
+                        </div>
+                        
+                        <div className="relative border-l border-slate-800 ml-4 pl-6 space-y-6">
+                          {/* Step 1: Received */}
+                          <div className="relative">
+                            <span className="absolute -left-[31px] top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 ring-4 ring-slate-950">
+                              <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                            </span>
+                            <h4 className="text-xs font-bold text-white">RECEIVED</h4>
+                            <p className="text-[11px] text-slate-400 mt-0.5">Invoice successfully parsed and queued for approval.</p>
+                          </div>
+
+                          {/* Step 2: Approved */}
+                          <div className="relative">
+                            <span className={`absolute -left-[31px] top-0.5 flex h-4 w-4 items-center justify-center rounded-full ring-4 ring-slate-950 ${
+                              portalSelectedInvoice.status === 'APPROVED' || portalSelectedInvoice.status === 'PAID'
+                                ? 'bg-emerald-500'
+                                : 'bg-slate-800'
+                            }`}>
+                              {(portalSelectedInvoice.status === 'APPROVED' || portalSelectedInvoice.status === 'PAID') && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                            </span>
+                            <h4 className={`text-xs font-bold ${
+                              portalSelectedInvoice.status === 'APPROVED' || portalSelectedInvoice.status === 'PAID'
+                                ? 'text-white'
+                                : 'text-slate-500'
+                            }`}>
+                              APPROVED
+                            </h4>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Approved for corporate disbursement.
+                              {(portalSelectedInvoice.status === 'APPROVED' || portalSelectedInvoice.status === 'PAID') && (
+                                <span className="block mt-1 font-semibold text-indigo-400">
+                                  Authorized by: {portalSelectedInvoice.approver_name || 'Robert Smith'}
+                                </span>
+                              )}
+                            </p>
+                          </div>
+
+                          {/* Step 3: Dispatched */}
+                          <div className="relative">
+                            <span className={`absolute -left-[31px] top-0.5 flex h-4 w-4 items-center justify-center rounded-full ring-4 ring-slate-950 ${
+                              portalSelectedInvoice.status === 'PAID'
+                                ? 'bg-emerald-500'
+                                : 'bg-slate-800'
+                            }`}>
+                              {portalSelectedInvoice.status === 'PAID' && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                            </span>
+                            <h4 className={`text-xs font-bold ${
+                              portalSelectedInvoice.status === 'PAID'
+                                ? 'text-white'
+                                : 'text-slate-500'
+                            }`}>
+                              DISPATCHED
+                            </h4>
+                            <p className="text-[11px] text-slate-400 mt-0.5">Payment successfully processed and dispatched to your bank.</p>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                            inv.status === 'PAID'
-                              ? 'bg-emerald-500/10 text-emerald-400'
-                              : 'bg-amber-500/10 text-amber-400'
-                          }`}>
-                            {inv.status}
-                          </span>
-                          
-                          {inv.status !== 'PAID' && inv.early_payment_discount_percentage > 0 && (
+                        {/* Early pay offer inside tracker */}
+                        {portalSelectedInvoice.status !== 'PAID' && portalSelectedInvoice.early_payment_discount_percentage > 0 && (
+                          <div className="border border-indigo-500/20 bg-indigo-500/5 p-4 rounded-xl space-y-3">
+                            <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <Calendar className="w-4 h-4 text-indigo-400" /> Dynamic Early Payment Offer
+                            </h4>
+                            <p className="text-[11px] text-slate-400">
+                              Accelerate payout to settle immediately at a { (portalSelectedInvoice.early_payment_discount_percentage * 100).toFixed(0) }% discount.
+                            </p>
+                            <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800/80 text-[10px] space-y-1">
+                              <div className="flex justify-between"><span className="text-slate-500">Original Total</span><span className="font-semibold text-white">{formatCurrency(portalSelectedInvoice.invoice_amount)}</span></div>
+                              <div className="flex justify-between"><span className="text-slate-500">Discount ({ (portalSelectedInvoice.early_payment_discount_percentage * 100).toFixed(0) }%)</span><span className="font-semibold text-emerald-400">-{formatCurrency(portalSelectedInvoice.cash_savings)}</span></div>
+                              <div className="flex justify-between border-t border-slate-850 pt-1 mt-1 font-bold"><span className="text-slate-400">Payout Amount</span><span className="text-emerald-400">{formatCurrency(portalSelectedInvoice.invoice_amount - portalSelectedInvoice.cash_savings)}</span></div>
+                            </div>
                             <button
-                              onClick={() => {
-                                setPortalSelectedInvoice(inv);
+                              onClick={async () => {
+                                await handleAction(portalSelectedInvoice.id, 'approve');
+                                await handleAction(portalSelectedInvoice.id, 'pay');
+                                setPortalSelectedInvoice(null);
                               }}
-                              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold transition-all"
+                              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-lg text-xs font-bold transition-all"
                             >
-                              Request Early Pay
+                              Accept Terms & Settle Immediately
                             </button>
-                          )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Self-Service Ingestion Portal */}
+                    <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-6">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-300">Self-Service Invoice Ingestion Portal</h3>
+                        <p className="text-xs text-slate-500 mt-0.5">Submit new invoices via manual upload or simulated email.</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Option A: Manual Upload */}
+                        <div className="bg-[#080d1a] border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-4">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                              <Upload className="w-4 h-4 text-emerald-400" /> Manual File Upload
+                            </h4>
+                            <p className="text-[11px] text-slate-500 mt-1">
+                              Choose a PDF/Image invoice file to upload directly to ABC Enterprises.
+                            </p>
+                          </div>
+                          
+                          <div>
+                            <input 
+                              type="file" 
+                              onChange={(e) => setCustomFile(e.target.files?.[0] || null)}
+                              accept=".pdf,.png,.jpg,.jpeg"
+                              className="w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-slate-800 file:text-slate-300 hover:file:bg-slate-700 cursor-pointer"
+                            />
+                            <button
+                              onClick={handleCustomFileUpload}
+                              disabled={customUploading || !customFile}
+                              className="w-full mt-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs p-2 rounded-lg font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {customUploading ? `Uploading (Step ${uploadStep}/5)...` : 'Upload Invoice'}
+                            </button>
+                            {customUploadError && <p className="text-[10px] text-red-400 mt-1">{customUploadError}</p>}
+                            {uploadResult && <p className="text-[10px] text-emerald-400 mt-1 font-semibold">Uploaded invoice {uploadResult.invoice_number}!</p>}
+                          </div>
+                        </div>
+
+                        {/* Option B: Email Simulation */}
+                        <div className="bg-[#080d1a] border border-slate-800 rounded-xl p-4 space-y-4">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                              <Building className="w-4 h-4 text-indigo-400" /> Simulated Email Ingestion
+                            </h4>
+                            <p className="text-[11px] text-slate-500 mt-1">
+                              Mock sending an email to `finance@abcenterprises.com` with invoice attachment.
+                            </p>
+                          </div>
+
+                          <form onSubmit={handleEmailSimulateSubmit} className="space-y-2 text-xs">
+                            <div>
+                              <label className="block text-[10px] text-slate-500 mb-0.5">Sender Email</label>
+                              <input 
+                                type="email" 
+                                value={emailSender} 
+                                onChange={(e) => setEmailSender(e.target.value)}
+                                className="w-full bg-[#03060f] border border-slate-800 rounded-md p-1.5 text-white" 
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-500 mb-0.5">Subject</label>
+                              <input 
+                                type="text" 
+                                value={emailSubject} 
+                                onChange={(e) => setEmailSubject(e.target.value)}
+                                placeholder="e.g. Acme Invoice Attached" 
+                                className="w-full bg-[#03060f] border border-slate-800 rounded-md p-1.5 text-white placeholder-slate-600" 
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-500 mb-0.5">Email Body</label>
+                              <textarea 
+                                value={emailBody} 
+                                onChange={(e) => setEmailBody(e.target.value)}
+                                placeholder="Write email body text..." 
+                                rows={2}
+                                className="w-full bg-[#03060f] border border-slate-800 rounded-md p-1.5 text-white placeholder-slate-600 resize-none" 
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-500 mb-0.5">Invoice Attachment</label>
+                              <input 
+                                id="email_file_input"
+                                type="file" 
+                                onChange={(e) => setEmailAttachment(e.target.files?.[0] || null)}
+                                accept=".pdf,.png,.jpg,.jpeg"
+                                className="w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-slate-850 file:text-slate-300 hover:file:bg-slate-700 cursor-pointer"
+                                required
+                              />
+                            </div>
+                            <button
+                              type="submit"
+                              disabled={emailUploading}
+                              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs p-2 rounded-lg font-bold transition-all disabled:opacity-40"
+                            >
+                              {emailUploading ? 'Processing...' : 'Simulate Send Email'}
+                            </button>
+                            {emailSuccessMessage && <p className="text-[10px] text-emerald-400 mt-1 font-semibold">{emailSuccessMessage}</p>}
+                            {emailErrorMessage && <p className="text-[10px] text-red-400 mt-1 font-semibold leading-relaxed">{emailErrorMessage}</p>}
+                          </form>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Supplier Bank / Term Detail */}
-                <div className="lg:col-span-5 space-y-6">
-                  <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-4">
-                    <h3 className="text-sm font-bold text-slate-300">Supplier Banking Credentials</h3>
-                    <div className="space-y-3 text-xs">
-                      <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
-                        <p className="text-slate-500">Bank Name</p>
-                        <p className="font-semibold text-white mt-1">CitiBank</p>
-                      </div>
-                      <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
-                        <p className="text-slate-500">Routing Transit Number (RTN)</p>
-                        <p className="font-semibold text-white mt-1">021000089</p>
-                      </div>
-                      <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
-                        <p className="text-slate-500">Depositary Account Number (DAN)</p>
-                        <p className="font-semibold text-white mt-1">******8832</p>
-                      </div>
                     </div>
                   </div>
 
-                  {portalSelectedInvoice && (
-                    <div className="bg-[#0f1524]/60 border border-indigo-500/30 rounded-2xl p-6 shadow-sm space-y-4 animate-fade-in">
-                      <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                        <Calendar className="w-4.5 h-4.5 text-indigo-400" /> Apply Early Discount Settlement
-                      </h3>
-                      <p className="text-xs text-slate-400 leading-normal">
-                        Accept early payment terms for invoice **{portalSelectedInvoice.invoice_number}**. Billed amount will be discounted to settle immediately.
-                      </p>
-
-                      <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 text-xs space-y-2">
-                        <div className="flex justify-between"><span className="text-slate-500">Original Total</span><span className="font-semibold text-white">{formatCurrency(portalSelectedInvoice.invoice_amount)}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Discount Offered ({ (portalSelectedInvoice.early_payment_discount_percentage * 100).toFixed(0) }%)</span><span className="font-semibold text-emerald-400">-{formatCurrency(portalSelectedInvoice.cash_savings)}</span></div>
-                        <div className="flex justify-between border-t border-slate-800 pt-2 mt-2 font-bold"><span className="text-slate-400">Accelerated Payout</span><span className="text-emerald-400">{formatCurrency(portalSelectedInvoice.invoice_amount - portalSelectedInvoice.cash_savings)}</span></div>
-                      </div>
-
-                      <button
-                        onClick={async () => {
-                          if (portalSelectedInvoice) {
-                            await handleAction(portalSelectedInvoice.id, 'approve');
-                            await handleAction(portalSelectedInvoice.id, 'pay');
-                            setPortalSelectedInvoice(null);
-                          }
-                        }}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white p-2.5 rounded-xl text-xs font-bold transition-all"
-                      >
-                        Accept Terms & Request Payout
-                      </button>
+                  {/* Right Column: Banking Details */}
+                  <div className="lg:col-span-5 space-y-6">
+                    <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm space-y-4">
+                      <h3 className="text-sm font-bold text-slate-300">Registered Banking Credentials</h3>
+                      
+                      {activeVendorObj ? (
+                        <div className="space-y-3 text-xs">
+                          <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                            <p className="text-slate-500">Bank Name</p>
+                            <p className="font-semibold text-white mt-1">{activeVendorObj.bank_name || 'N/A'}</p>
+                          </div>
+                          <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                            <p className="text-slate-500">Routing Transit Number (RTN)</p>
+                            <p className="font-semibold text-white mt-1">{activeVendorObj.bank_routing_number || 'N/A'}</p>
+                          </div>
+                          <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                            <p className="text-slate-500">Depositary Account Number (DAN)</p>
+                            <p className="font-semibold text-white mt-1">
+                              {activeVendorObj.bank_account_number 
+                                ? `******${activeVendorObj.bank_account_number.slice(-4)}` 
+                                : 'N/A'}
+                            </p>
+                          </div>
+                          <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                            <p className="text-slate-500">Default Discount Percentage</p>
+                            <p className="font-semibold text-emerald-400 mt-1">{(activeVendorObj.default_discount_pct * 100).toFixed(1)}%</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-slate-500 text-xs py-4 text-center">
+                          No banking credentials configured.
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
+              </div>
+            );
+          })()}
+
+          {activeTab === 'user_approvals' && (
+            <div className="space-y-8 animate-fade-in">
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <UserCheck className="w-5 h-5 text-indigo-400" /> Pending User Registrations
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Review and authorize self-registered accounts. Segregate them as either internal Business Managers (Finance Manager role) or external Vendors (Supplier role).
+                </p>
+              </div>
+
+              <div className="bg-[#0f1524]/60 border border-slate-800/80 rounded-2xl p-6 shadow-sm overflow-hidden">
+                {pendingUsers.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 text-xs">
+                    No pending registration requests found.
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {pendingUsers.map((u) => {
+                      return (
+                        <div key={u.id} className="bg-slate-950/40 border border-slate-800 p-5 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-all hover:border-slate-700">
+                          <div className="space-y-1">
+                            <p className="font-semibold text-sm text-white">{u.first_name} {u.last_name}</p>
+                            <p className="text-xs font-mono text-indigo-300">{u.email}</p>
+                            <p className="text-[10px] text-slate-500">Requested: {new Date(u.created_at).toLocaleString()}</p>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-3">
+                            {/* Option A: Approve as Business Manager */}
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const res = await authFetch(`${API_BASE}/users/${u.id}/approve`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ role: 'FINANCE_MANAGER' })
+                                  });
+                                  if (res.ok) {
+                                    await fetchPendingUsers();
+                                  }
+                                } catch (err) {
+                                  console.error('Error approving manager:', err);
+                                }
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3.5 py-2 rounded-lg font-bold transition-all shadow-md"
+                            >
+                              Approve as Manager
+                            </button>
+
+                            {/* Option B: Approve as Vendor */}
+                            <div className="flex items-center gap-2 border border-slate-800 bg-slate-950/80 p-1.5 rounded-lg">
+                              <select 
+                                id={`vendor-select-${u.id}`}
+                                className="bg-[#03060f] border-0 text-xs text-slate-300 focus:ring-0 rounded cursor-pointer"
+                              >
+                                <option value="">Select Vendor...</option>
+                                {vendors.map(v => (
+                                  <option key={v.id} value={v.id}>{v.name}</option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={async () => {
+                                  const selectEl = document.getElementById(`vendor-select-${u.id}`) as HTMLSelectElement;
+                                  const vendorId = selectEl?.value;
+                                  if (!vendorId) {
+                                    alert("Please select a vendor from the list to map this user.");
+                                    return;
+                                  }
+                                  try {
+                                    const res = await authFetch(`${API_BASE}/users/${u.id}/approve`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ role: 'SUPPLIER_USER', vendor_id: vendorId })
+                                    });
+                                    if (res.ok) {
+                                      await fetchPendingUsers();
+                                    }
+                                  } catch (err) {
+                                    console.error('Error approving vendor:', err);
+                                  }
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-md font-bold transition-all"
+                              >
+                                Map as Vendor
+                              </button>
+                            </div>
+
+                            {/* Option C: Reject */}
+                            <button
+                              onClick={async () => {
+                                if (confirm(`Are you sure you want to reject registration request from ${u.email}?`)) {
+                                  try {
+                                    const res = await authFetch(`${API_BASE}/users/${u.id}/reject`, {
+                                      method: 'POST'
+                                    });
+                                    if (res.ok) {
+                                      await fetchPendingUsers();
+                                    }
+                                  } catch (err) {
+                                    console.error('Error rejecting user:', err);
+                                  }
+                                }
+                              }}
+                              className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs px-3.5 py-2 rounded-lg font-semibold transition-all"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -4,7 +4,7 @@ import requests
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, Header, Depends, status
 from sqlalchemy.orm import Session
-from database import get_db, User, Organization
+from database import get_db, User, Organization, Vendor
 
 CLERK_JWKS_URL = "https://light-drake-0.clerk.accounts.dev/.well-known/jwks.json"
 
@@ -120,31 +120,16 @@ def get_current_user(
     clerk_org_id = payload.get("org_id")
     org_role = payload.get("org_role") or "MEMBER"
     
-    # Resolve Organization
-    org = None
-    if clerk_org_id:
-        org = db.query(Organization).filter(Organization.clerk_org_id == clerk_org_id).first()
-        if not org:
-            # Create organization in local DB mapping to Clerk organization ID
-            org = Organization(
-                clerk_org_id=clerk_org_id,
-                name=f"Org {clerk_org_id[:12]}"
-            )
-            db.add(org)
-            db.commit()
-            db.refresh(org)
-    else:
-        # Fallback personal workspace organization if user is not logged in under a Clerk org
-        personal_org_id = f"personal_{clerk_user_id}"
-        org = db.query(Organization).filter(Organization.clerk_org_id == personal_org_id).first()
-        if not org:
-            org = Organization(
-                clerk_org_id=personal_org_id,
-                name="Personal Workspace"
-            )
-            db.add(org)
-            db.commit()
-            db.refresh(org)
+    # Resolve Organization: always map to the primary seeded organization for single-tenant demo context
+    org = db.query(Organization).first()
+    if not org:
+        org = Organization(
+            clerk_org_id=clerk_org_id or "org_2tJ8XWn6qE",
+            name="Acme Corporation"
+        )
+        db.add(org)
+        db.commit()
+        db.refresh(org)
             
     # Resolve User
     user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
@@ -154,21 +139,57 @@ def get_current_user(
         first_name = payload.get("first_name") or x_user_firstname or "First"
         last_name = payload.get("last_name") or x_user_lastname or "Last"
         
+        # Check if this is the default Administrator
+        if email == "joshiamogh1234@gmail.com":
+            role = "ADMINISTRATOR"
+            status = "APPROVED"
+            vendor_id = None
+        else:
+            # Check if the email matches a known vendor in the DB
+            vendor = db.query(Vendor).filter(Vendor.email == email, Vendor.organization_id == org.id).first()
+            if vendor:
+                role = "SUPPLIER_USER"
+                status = "APPROVED"
+                vendor_id = vendor.id
+            else:
+                # Check if this email was pre-approved / pre-seeded as a manager
+                pre_seeded_user = db.query(User).filter(User.email == email, User.clerk_user_id == "pending").first()
+                if pre_seeded_user:
+                    pre_seeded_user.clerk_user_id = clerk_user_id
+                    pre_seeded_user.first_name = first_name
+                    pre_seeded_user.last_name = last_name
+                    pre_seeded_user.status = "APPROVED"
+                    db.commit()
+                    return pre_seeded_user
+                
+                # Otherwise, new signup starts as PENDING_APPROVAL
+                role = "PENDING_APPROVAL"
+                status = "PENDING"
+                vendor_id = None
+            
         user = User(
             clerk_user_id=clerk_user_id,
             organization_id=org.id,
             email=email,
             first_name=first_name,
             last_name=last_name,
-            role=org_role
+            role=role,
+            vendor_id=vendor_id,
+            status=status
         )
         db.add(user)
         db.commit()
         db.refresh(user)
-        print(f"[AUTH] Automatically created new User record for {email}.")
+        print(f"[AUTH] Automatically created new User record for {email} with role {role} and status {status}.")
     else:
+        # If this is the default Administrator, ensure correct role and status
+        if user.email == "joshiamogh1234@gmail.com" and user.role != "ADMINISTRATOR":
+            user.role = "ADMINISTRATOR"
+            user.status = "APPROVED"
+            db.commit()
+            db.refresh(user)
         # Keep organization and role synced in DB if user switches active org in Clerk
-        if user.organization_id != org.id:
+        elif user.organization_id != org.id:
             user.organization_id = org.id
             user.role = org_role
             db.commit()
