@@ -1,0 +1,9 @@
+# Development and Streamlit Showcase Dependencies
+-r requirements.txt
+streamlit==1.59.1
+pandas==3.0.3
+numpy==2.5.1
+pyarrow==24.0.0
+altair==6.2.2
+pydeck==0.9.3
+watchdog==6.0.0
