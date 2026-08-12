@@ -6,7 +6,7 @@ from fastapi import HTTPException, Header, Depends, status
 from sqlalchemy.orm import Session
 from database import get_db, User, Organization, Vendor
 
-CLERK_JWKS_URL = "https://light-drake-0.clerk.accounts.dev/.well-known/jwks.json"
+CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "https://light-drake-0.clerk.accounts.dev/.well-known/jwks.json")
 
 # In-memory cache for JWKS to avoid fetching on every request
 _jwks_cache = None
@@ -140,7 +140,8 @@ def get_current_user(
         last_name = payload.get("last_name") or x_user_lastname or "Last"
         
         # Check if this is the default Administrator
-        if email == "joshiamogh1234@gmail.com":
+        admin_email = os.environ.get("ADMIN_EMAIL", "joshiamogh1234@gmail.com")
+        if email == admin_email:
             role = "ADMINISTRATOR"
             status = "APPROVED"
             vendor_id = None
@@ -183,7 +184,8 @@ def get_current_user(
         print(f"[AUTH] Automatically created new User record for {email} with role {role} and status {status}.")
     else:
         # If this is the default Administrator, ensure correct role and status
-        if user.email == "joshiamogh1234@gmail.com" and user.role != "ADMINISTRATOR":
+        admin_email = os.environ.get("ADMIN_EMAIL", "joshiamogh1234@gmail.com")
+        if user.email == admin_email and user.role != "ADMINISTRATOR":
             user.role = "ADMINISTRATOR"
             user.status = "APPROVED"
             db.commit()

@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { Invoice, Vendor, PurchaseOrder, Analytics, Settings } from '../types';
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 
 export default function Dashboard() {
   const { getToken } = useAuth();

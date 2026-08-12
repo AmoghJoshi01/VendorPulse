@@ -5,7 +5,7 @@ echo ===================================================
 echo.
 
 echo [1/2] Starting FastAPI Backend on http://127.0.0.1:8000 ...
-start "VendorPulse Backend" cmd /k "python Backend/main.py"
+start "VendorPulse Backend" cmd /k ".venv\Scripts\python.exe Backend/main.py"
 
 echo [2/2] Starting React Dev Server on http://localhost:5173 ...
 start "VendorPulse Frontend" cmd /k "cd Frontend && npm run dev"

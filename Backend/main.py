@@ -81,9 +81,14 @@ app = FastAPI(
 )
 
 # CORS configuration
+allowed_origins_str = os.environ.get("ALLOWED_ORIGINS", "*")
+allowed_origins = [orig.strip() for orig in allowed_origins_str.split(",") if orig.strip()]
+if not allowed_origins:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1289,4 +1294,7 @@ def reject_user(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    reload = os.environ.get("ENV", "development").lower() == "development"
+    uvicorn.run("main:app", host=host, port=port, reload=reload)
